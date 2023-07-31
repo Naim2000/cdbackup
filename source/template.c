@@ -9,58 +9,10 @@
 
 // #include "id.h"
 #include "wiibasics.h"
-// #include "runtimeiospatch.h"
+#include "runtimeiospatch.h"
 
 #define TITLE_ID(x,y)		(((u64)(x) << 32) | (y))
-#define SYSMENU_ID			0x0000000100000002LL
-/* int ISFS_GetFileSize(const char* filepath, u32 *filesize) {
-	int ret, fd;
-	static fstats stats ATTRIBUTE_ALIGN(32);
-
-	ret = ISFS_Open(filepath, ISFS_OPEN_READ);
-	if (ret <= 0)
-	{
-		printf("Error! ISFS_Open (ret = %d)\n", ret);
-		return ret;
-	}
-
-	fd = ret;
-
-	ret = ISFS_GetFileStats(fd, &stats);
-	if (ret < 0)
-	{
-		printf("Error! ISFS_GetFileStats (ret = %d)\n", ret);
-		return ret;
-	}
-	*filesize = stats.file_length;
-	ret = ISFS_Close(fd);
-	if (ret < 0) {
-		printf("Hhhhhhhhhhowwwwwwwwwwwwwwwwwwwww (%d)", ret);
-		return ret;
-	}
-	return 0;
-} */
-
-/* s8 HaveNandPermissions( void )
-{
-	printf("testing permissions...\n");
-	s32 temp = ISFS_Open("/title/00000001/00000002/content/title.tmd",ISFS_OPEN_RW);
-	if ( temp < 0 )
-	{
-		return false;
-	}
-	else
-	{
-		ISFS_Close(temp);
-		return true;
-	}
-} */
-
-bool isDolphin(void) {
-	s32 fd = IOS_Open("/dev/dolphin", IPC_OPEN_NONE);
-	if (fd >= 0) IOS_Close(fd);
-    return fd >= 0;
-}
+#define SYSMENU_ID			TITLE_ID(1, 2)
 
 //---------------------------------------------------------------------------------
 int main(int argc, char **argv) {
@@ -74,18 +26,22 @@ int main(int argc, char **argv) {
 	FILE *cdbackup = NULL;
 
 	basicInit();
-
+	if (!AHBPROT_DISABLED) {
+		printf("Hardware protection is enabled. Leaving ...");
+		return ERROR_AHBPROT;
+	}
+	printf("Hardware protection is disabled. Patching IOS...\n");
+	ret = IosPatch_RUNTIME(true, false, false, false);
+	if(ret < 0) {
+		printf("Unknown error!");
+		return ret;
+	}
+	printf("OK!\n");
 	ISFS_Initialize();
-	// printf("ISFS_Initialize -> %d\n", ret);
-	// if (ret < 0) {
-	// 	sleep(2);
-	// 	return ret;
-	// }
-
 	ES_GetTitleID(&tid);
 	printf("I am %08x-%08x\n", TITLE_UPPER(tid), TITLE_LOWER(tid));
 	if (tid != SYSMENU_ID) {
-		printf("^^ Not system menu!!");
+		printf("^^ Not system menu!!"); // maybe i should try identify as sm here
 		sleep(2);
 		return(-1);
 	}
@@ -98,8 +54,8 @@ int main(int argc, char **argv) {
 	printf("file path: %s\n", filepath);
 	sleep(1);
 
-	fd = IOS_Open(filepath, IPC_OPEN_READ);
-	printf("IOS_Open -> %d", fd);
+	fd = ISFS_Open(filepath, ISFS_OPEN_READ);
+	printf("ISFS_Open -> %d", fd);
 	if (fd <= 0) {
 		sleep(2);
 		return fd;

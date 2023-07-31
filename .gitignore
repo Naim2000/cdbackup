@@ -1,0 +1,4 @@
+.*/
+build/
+*.dol
+*.elf
