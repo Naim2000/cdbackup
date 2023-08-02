@@ -17,12 +17,11 @@ static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
 
 static char header[] = "cdbackup : Backup/restore Wii Message Board data\n\n";
-static char nand_file_path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
-static char sd_file_path[] = "sd:/cdbackup.vff";
+static char cdb_filepath[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
+static char sd_filepath[] = "cdbackup.vff";
 
 typedef struct {
 	size_t short_actual;
-	u32 short_expected;
 } errinfo;
 
 void init_video(int row, int col) {
@@ -70,12 +69,47 @@ s32 read_nand_file(const char* filepath, u8* *buffer, u32* filesize, errinfo* er
 		return(ret);
 	}
 	else if (ret < *filesize) {
-		error_info->short_expected = *filesize;
 		error_info->short_actual   = ret;
 		ISFS_Close(fd);
 		return short_read;
 	}
 	return 0;
+}
+
+s32 read_fat_file(const char filepath[], u8* *buffer, u32 *filesize, errinfo *error_info) {
+	FILE *fd = fopen(filepath, "rb");
+	if (fd == NULL) return fat_open_failed;
+
+	fseek(fd, 0, SEEK_END);
+	*filesize = ftell(fd);
+	fseek(fd, 0, SEEK_SET);
+
+	*buffer = (u8*)malloc(*filesize);
+	if(*buffer == NULL) return no_memory;
+
+	size_t read = fread(*buffer, 1, *filesize, fd); // size_t --> unsigned long, not gonna return negative
+	if(read < *filesize) {
+		error_info->short_actual = read;
+		return short_read;
+	}
+	return ok;
+}
+
+s32 write_nand_file(const char filepath[ISFS_MAXPATH], u8 *buffer, u32 filesize, errinfo *error_info) {
+	s32 fd = ISFS_Open(filepath, ISFS_OPEN_WRITE);
+	if (fd < 0) return fd;
+
+	s32 ret = ISFS_Write(fd, buffer, filesize);
+	if (ret < 0) {
+		ISFS_Close(fd);
+		return ret;
+	}
+	else if (ret < filesize) {
+		error_info->short_actual = ret;
+		ISFS_Close(fd);
+		return short_write;
+	}
+	return ok;
 }
 
 s32 write_fat_file(const char* filepath, u8 *buffer, u32 filesize, errinfo* error_info) {
@@ -84,8 +118,8 @@ s32 write_fat_file(const char* filepath, u8 *buffer, u32 filesize, errinfo* erro
 
 	size_t written = fwrite(buffer, 1, filesize, fd);
 	if(written < filesize) {
-		error_info->short_expected = filesize;
-		error_info->short_actual   = written;
+		error_info->short_actual = written;
+		fclose(fd);
 		return short_write;
 	}
 	fflush(fd);
@@ -95,70 +129,101 @@ s32 write_fat_file(const char* filepath, u8 *buffer, u32 filesize, errinfo* erro
 
 s32 backup() {
 	s32 ret;
-	u8 *nand_file_buffer	= NULL;
-	size_t nand_file_size;
+	u8 *fb = NULL;
+	size_t filesize;
 	errinfo error_info;
 
-	printf("reading %s ...\n", nand_file_path);
+	printf("reading %s ...\n", cdb_filepath);
 
-	ret = read_nand_file(nand_file_path, &nand_file_buffer, &nand_file_size, &error_info);
+	ret = read_nand_file(cdb_filepath, &fb, &filesize, &error_info);
 	switch(ret) {
 		case no_memory:
-			printf("Could not allocate %d bytes of memory!\n", nand_file_size);
-			sleep(2);
+			printf("Could not allocate %d bytes of memory!\n", filesize);
+			sleep(5);
 			return ret;
-		case short_write:
-			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, error_info.short_expected);
-			sleep(2);
+		case short_read:
+			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
+			sleep(5);
 			return ret;
 		case ok:
-			printf("OK! Read %d bytes.\n", nand_file_size);
+			printf("OK! Read %d bytes.\n", filesize);
 			break;
 
 		default:
 			printf("Error while reading file! (%d)\n", ret);
-			sleep(2);
+			sleep(5);
 			return ret;
 	}
 
-	// printf("%s is %d bytes, read %d bytes.", nand_file_path, *nand_file_size, ret);
-	sleep(2);
+	printf("writing to %s ...\n", sd_filepath);
 
-	printf("writing to %s...\n", sd_file_path);
-	sleep(2);
-
-	if(MountSD() < 0) {
-		printf("failed to mount SD.\n");
-		sleep(2);
-		return(-6);
-	}
-
-	ret = write_fat_file(sd_file_path, nand_file_buffer, nand_file_size, &error_info);
+	ret = write_fat_file(sd_filepath, fb, filesize, &error_info);
 	switch(ret) {
 		case fat_open_failed:
 			printf("Could not open handle to file!\n");
-			sleep(2);
+			sleep(5);
 			return ret;
 		case short_write:
-			printf("Short write! Only got in %d bytes out of %d; do you have enough free space?\n", error_info.short_actual, error_info.short_expected);
-			sleep(2);
+			printf("Short write! Only got in %d bytes out of %d; do you have enough free space?\n", error_info.short_actual, filesize);
+			sleep(5);
 			return ret;
 		case ok:
-			printf("OK! Wrote %d bytes.\n", nand_file_size);
+			printf("OK! Wrote %d bytes.\n", filesize);
+			sleep(5);
 			break;
 	}
 
-	printf("freeing buffer...\n");
-	free(nand_file_buffer);
-	printf("shutting down ISFS...\n");
-	ISFS_Deinitialize();
-	printf("unmounting SD...");
-	UnmountSD();
+	free(fb);
+	return ok;
+}
 
-	printf("all done!\n");
-	sleep(5);
+s32 restore() {
+	s32 ret;
+	u8 *fb = NULL;
+	size_t filesize;
+	errinfo error_info;
 
-	return 0;
+	printf("reading %s ...\n", sd_filepath);
+	ret = read_fat_file(sd_filepath, &fb, &filesize, &error_info);
+	switch(ret) {
+		case fat_open_failed:
+			printf("Could not open handle to file; does it exist?\n");
+			sleep(5);
+			return ret;
+		case no_memory:
+			printf("Could not allocate %d bytes of memory!", filesize);
+			sleep(5);
+			return ret;
+		case short_read:
+			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
+			sleep(5);
+			return ret;
+		case ok:
+			printf("OK! Read %d bytes.\n", filesize);
+			sleep(5);
+			break;
+	}
+
+	printf("writing to %s ...\n", cdb_filepath);
+	ret = write_nand_file(cdb_filepath, fb, filesize, &error_info);
+	switch(ret) {
+		case short_write:
+			printf("Short write! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
+			sleep(5);
+			return ret;
+		case ok:
+			printf("OK! Wrote %d bytes.\n", filesize);
+			sleep(5);
+			break;
+
+		default:
+			printf("Error while writing file! (%d)\n", ret);
+			sleep(5);
+			return ret;
+	}
+
+	free(fb);
+	return ok;
 }
 
 int main() {
@@ -167,23 +232,30 @@ int main() {
 	PAD_Init();
 	s32 ret = ISFS_Initialize();
 	if (ret < 0) {
-		printf("ISFS_Initialize returned %d.", ret);
+		printf("ISFS_Initialize returned %d.\nNever seen this happen, however, it just did. Always prepare for the worst.\n", ret);
 		return ret;
 	}
 
+	if (MountSD() > 0) chdir("sd:/");
+	else if (MountUSB()) chdir("usb:/");
+	else {
+		printf("Could not mount storage device!\n");
+		return -1;
+	}
+
 	printf(header);
-	sleep(2);
+	sleep(3);
 	printf("Press A to backup your message board data.\n");
-	printf("Press B to restore your message board data.\n");
+	printf("Press -/Y to restore your message board data.\n");
 	printf("Press HOME/START to return to loader.\n\n");
 	while(true) {
 		WPAD_ScanPads();
 		PAD_ScanPads();
 		u32 wii_down = WPAD_ButtonsDown(0);
 		u32 gcn_down =  PAD_ButtonsDown(0);
-		if		(wii_down & WPAD_BUTTON_A	|| gcn_down & PAD_BUTTON_A)		return backup();
-		else if	(wii_down & WPAD_BUTTON_B	|| gcn_down & PAD_BUTTON_B)		return 0;//restore();
-		else if	(wii_down & WPAD_BUTTON_HOME|| gcn_down & PAD_BUTTON_START)	return ok;
+		if		(wii_down & WPAD_BUTTON_A		|| gcn_down & PAD_BUTTON_A)		return backup();
+		else if	(wii_down & WPAD_BUTTON_MINUS	|| gcn_down & PAD_BUTTON_Y)		return restore();
+		else if	(wii_down & WPAD_BUTTON_HOME	|| gcn_down & PAD_BUTTON_START)	return ok;
 		VIDEO_WaitVSync();
 	}
 }
