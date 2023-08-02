@@ -7,8 +7,19 @@
 
 #include "fatMounter.h"
 
+#define no_memory		-4011
+#define short_read		-4022
+#define short_write		-4021
+#define fat_open_failed	-4111
+#define ok				0
+
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+
+typedef struct {
+	size_t short_actual;
+	u32 short_expected;
+} errinfo;
 
 void init_video(int row, int col) {
 	VIDEO_Init();
@@ -29,15 +40,62 @@ void init_video(int row, int col) {
 	printf("\x1b[%d;%dH", row, col);
 }
 
+s32 read_nand_file(const char* filepath, u8* *buffer, u32* filesize, errinfo* error_info) {
+	s32 ret;
+	fstats stats ATTRIBUTE_ALIGN(32);
+
+	s32 fd = ISFS_Open(filepath, ISFS_OPEN_READ);
+	if (fd < 0) return fd;
+
+	ret = ISFS_GetFileStats(fd, &stats);
+	if (ret < 0) {
+		ISFS_Close(fd);
+		return ret;
+	}
+	*filesize = stats.file_length;
+
+	*buffer = (u8*)malloc(*filesize);
+	if (*buffer == NULL) {
+		ISFS_Close(fd);
+		return no_memory;
+	}
+
+	ret = ISFS_Read(fd, *buffer, *filesize);
+	if (ret <= 0) {
+		ISFS_Close(fd);
+		return(ret);
+	}
+	else if (ret < *filesize) {
+		error_info->short_expected = *filesize;
+		error_info->short_actual   = ret;
+		ISFS_Close(fd);
+		return short_read;
+	}
+	return 0;
+}
+
+s32 write_fat_file(const char* filepath, u8 *buffer, u32 filesize, errinfo* error_info) {
+	FILE *fd = fopen(filepath, "wb");
+	if (fd == NULL) return fat_open_failed;
+
+	size_t written = fwrite(buffer, 1, filesize, fd);
+	if(written < filesize) {
+		error_info->short_expected = filesize;
+		error_info->short_actual   = written;
+		return short_write;
+	}
+	fflush(fd);
+	fclose(fd);
+	return ok;
+}
+
 int main() {
 	static char nand_file_path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
 	static char sd_file_path[] = "sd:/cdbackup.vff";
-	static fstats nand_file_stats ATTRIBUTE_ALIGN(32);
-	s32 ret, nand_file_handle;
-	u32 *nand_file_size		= NULL;
+	s32 ret;
 	u8 *nand_file_buffer	= NULL;
-	FILE *sd_file_handle	= NULL;
-	size_t sd_file_write;
+	size_t nand_file_size;
+	errinfo error_info;
 
 	init_video(2, 0);
 
@@ -46,44 +104,32 @@ int main() {
 	sleep(2);
 	if (ret < 0) return ret;
 
-	printf("file path: %s\n", nand_file_path);
+	printf("reading %s ...\n", nand_file_path);
 
-	nand_file_handle = ISFS_Open(nand_file_path, ISFS_OPEN_READ);
-	printf("ISFS_Open -> %d\n", nand_file_handle);
-	sleep(2);
-	if (nand_file_handle <= 0) return(-1);
+	ret = read_nand_file(nand_file_path, &nand_file_buffer, &nand_file_size, &error_info);
+	switch(ret) {
+		case no_memory:
+			printf("Could not allocate %d bytes of memory!\n", nand_file_size);
+			sleep(2);
+			return ret;
+		case short_write:
+			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, error_info.short_expected);
+			sleep(2);
+			return ret;
+		case ok:
+			printf("OK! Read %d bytes.\n", nand_file_size);
+			break;
 
-	ret = ISFS_GetFileStats(nand_file_handle, &nand_file_stats);
-	printf("ISFS_GetFileStats -> %d\n", ret);
-	sleep(2);
-	if (ret < 0) return(-2);
-	nand_file_size = &nand_file_stats.file_length;
-	printf("%s is %d bytes long.\n", nand_file_path, *nand_file_size);
-	sleep(2);
-
-	nand_file_buffer = (u8*)malloc(*nand_file_size);
-	if (nand_file_buffer == NULL) {
-		printf("memory allocation failed! %d\n", *nand_file_size);
-		sleep(2);
-		return(-3);
-	}
-	printf("allocated %d bytes of memory\n", *nand_file_size);
-	sleep(2);
-
-	ret = ISFS_Read(nand_file_handle, nand_file_buffer, *nand_file_size);
-	printf("ISFS_Read -> %d\n", ret);
-	sleep(2);
-	if (ret <= 0) return(-4);
-	else if (ret < *nand_file_size) {
-		printf("short read (%d/%d)\n", ret, *nand_file_size);
-		sleep(2);
-		return(-5);
+		default:
+			printf("Error while reading file! (%d)\n", ret);
+			sleep(2);
+			return ret;
 	}
 
 	// printf("%s is %d bytes, read %d bytes.", nand_file_path, *nand_file_size, ret);
 	sleep(2);
 
-	printf("next step: writing the backup\n");
+	printf("writing to %s...\n", sd_file_path);
 	sleep(2);
 
 	if(MountSD() < 0) {
@@ -92,26 +138,27 @@ int main() {
 		return(-6);
 	}
 
-	sd_file_handle = fopen(sd_file_path, "wb");
-	printf("fopen --> %p\n", sd_file_handle);
-	sleep(2);
-	if (sd_file_handle == NULL) return(-7);
-
-	sd_file_write = fwrite(nand_file_buffer, 1, *nand_file_size, sd_file_handle);
-	printf("fwrite -> %d\n", sd_file_write);
-	if(sd_file_write < *nand_file_size) {
-		printf("short write (%d/%d)\n", sd_file_write, *nand_file_size);
-		return(-8);
+	ret = write_fat_file(sd_file_path, nand_file_buffer, nand_file_size, &error_info);
+	switch(ret) {
+		case fat_open_failed:
+			printf("Could not open handle to file!\n");
+			sleep(2);
+			return ret;
+		case short_write:
+			printf("Short write! Only got in %d bytes out of %d; do you have enough free space?\n", error_info.short_actual, error_info.short_expected);
+			sleep(2);
+			return ret;
+		case ok:
+			printf("OK! Wrote %d bytes.\n", nand_file_size);
+			break;
 	}
 
-	printf("flushing changes...\n");
-	fflush(sd_file_handle);
-	printf("closing backup file...\n");
-	fclose(sd_file_handle);
-	printf("closing nand file...\n");
-	ISFS_Close(nand_file_handle);
-	printf("closing ISFS...\n");
+	printf("freeing buffer...\n");
+	free(nand_file_buffer);
+	printf("shutting down ISFS...\n");
 	ISFS_Deinitialize();
+	printf("unmounting SD...");
+	UnmountSD();
 
 	printf("all done!\n");
 	sleep(5);
