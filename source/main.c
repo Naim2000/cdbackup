@@ -1,7 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <gccore.h>
-// #include <wiiuse/wpad.h>
+#include <wiiuse/wpad.h>
 #include <ogc/isfs.h>
 #include <malloc.h>
 
@@ -15,6 +15,10 @@
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+
+static char header[] = "cdbackup : Backup/restore Wii Message Board data\n\n";
+static char nand_file_path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
+static char sd_file_path[] = "sd:/cdbackup.vff";
 
 typedef struct {
 	size_t short_actual;
@@ -89,20 +93,11 @@ s32 write_fat_file(const char* filepath, u8 *buffer, u32 filesize, errinfo* erro
 	return ok;
 }
 
-int main() {
-	static char nand_file_path[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
-	static char sd_file_path[] = "sd:/cdbackup.vff";
+s32 backup() {
 	s32 ret;
 	u8 *nand_file_buffer	= NULL;
 	size_t nand_file_size;
 	errinfo error_info;
-
-	init_video(2, 0);
-
-	ret = ISFS_Initialize();
-	printf("ISFS_Initialize -> %d\n", ret);
-	sleep(2);
-	if (ret < 0) return ret;
 
 	printf("reading %s ...\n", nand_file_path);
 
@@ -164,4 +159,31 @@ int main() {
 	sleep(5);
 
 	return 0;
+}
+
+int main() {
+	init_video(2, 0);
+	WPAD_Init();
+	PAD_Init();
+	s32 ret = ISFS_Initialize();
+	if (ret < 0) {
+		printf("ISFS_Initialize returned %d.", ret);
+		return ret;
+	}
+
+	printf(header);
+	sleep(2);
+	printf("Press A to backup your message board data.\n");
+	printf("Press B to restore your message board data.\n");
+	printf("Press HOME/START to return to loader.\n\n");
+	while(true) {
+		WPAD_ScanPads();
+		PAD_ScanPads();
+		u32 wii_down = WPAD_ButtonsDown(0);
+		u32 gcn_down =  PAD_ButtonsDown(0);
+		if		(wii_down & WPAD_BUTTON_A	|| gcn_down & PAD_BUTTON_A)		return backup();
+		else if	(wii_down & WPAD_BUTTON_B	|| gcn_down & PAD_BUTTON_B)		return 0;//restore();
+		else if	(wii_down & WPAD_BUTTON_HOME|| gcn_down & PAD_BUTTON_START)	return ok;
+		VIDEO_WaitVSync();
+	}
 }
