@@ -154,10 +154,10 @@ s32 backup() {
 	switch(ret) {
 		case no_memory:
 			printf("Could not allocate %d bytes of memory!\n", filesize);
-			return quit(ret);
+			return ret;
 		case short_read:
 			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
-			return quit(ret);
+			return ret;
 		case ok:
 			printf("OK! Read %d bytes.\n", filesize);
 			sleep(1);
@@ -165,7 +165,7 @@ s32 backup() {
 
 		default:
 			printf("Error while reading file! (%d)\n", ret);
-			return quit(ret);
+			return ret;
 	}
 
 	printf("writing to %s ...\n", sd_filepath);
@@ -174,10 +174,10 @@ s32 backup() {
 	switch(ret) {
 		case fat_open_failed:
 			printf("Could not open handle to file!\n");
-			return quit(ret);
+			return ret;
 		case short_write:
 			printf("Short write! Only got in %d bytes out of %d; do you have enough free space?\n", error_info.short_actual, filesize);
-			return quit(ret);
+			return ret;
 		case ok:
 			printf("OK! Wrote %d bytes.\n", filesize);
 			sleep(1);
@@ -199,13 +199,13 @@ s32 restore() {
 	switch(ret) {
 		case fat_open_failed:
 			printf("Could not open handle to file; does it exist?\n");
-			return quit(ret);
+			return ret;
 		case no_memory:
 			printf("Could not allocate %d bytes of memory!", filesize);
-			return quit(ret);
+			return ret;
 		case short_read:
 			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
-			return quit(ret);
+			return ret;
 		case ok:
 			printf("OK! Read %d bytes.\n", filesize);
 			sleep(1);
@@ -217,7 +217,7 @@ s32 restore() {
 	switch(ret) {
 		case short_write:
 			printf("Short write! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
-			return quit(ret);
+			return ret;
 		case ok:
 			printf("OK! Wrote %d bytes.\n", filesize);
 			sleep(1);
@@ -225,7 +225,7 @@ s32 restore() {
 
 		default:
 			printf("Error while writing file! (%d)\n", ret);
-			return quit(ret);
+			return ret;
 	}
 
 	free(fb);
