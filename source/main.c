@@ -261,7 +261,7 @@ int main() {
 		u32 gcn_down =  PAD_ButtonsDown(0);
 		if		(wii_down & WPAD_BUTTON_A		|| gcn_down & PAD_BUTTON_A)		{ ret = backup();	break; }
 		else if	(wii_down & WPAD_BUTTON_MINUS	|| gcn_down & PAD_BUTTON_Y)		{ ret = restore();	break; }
-		else if	(wii_down & WPAD_BUTTON_HOME	|| gcn_down & PAD_BUTTON_START)	{ ret = ok;			break; }
+		else if	(wii_down & WPAD_BUTTON_HOME	|| gcn_down & PAD_BUTTON_START)	{ return ok; }
 		VIDEO_WaitVSync();
 	}
 	return quit(ret);
