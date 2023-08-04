@@ -16,7 +16,7 @@
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
 
-static char header[] = "cdbackup v1.0.0, by thepikachugamer\nBackup/Restore your Wii Message Board data.\n\n";
+static char header[] = "cdbackup v1.0.1, by thepikachugamer\nBackup/Restore your Wii Message Board data.\n\n";
 static char cdb_filepath[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
 static char sd_filepath[] = "cdbackup.vff";
 
