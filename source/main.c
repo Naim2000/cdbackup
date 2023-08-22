@@ -12,11 +12,12 @@
 #define short_write		-4021
 #define fat_open_failed	-4111
 #define ok				0
+#define user_abort		69
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
 
-static char header[] = "cdbackup v1.0.1, by thepikachugamer\nBackup/Restore your Wii Message Board data.\n\n";
+static char header[] = "cdbackup v1.1.0, by thepikachugamer\nBackup/Restore your Wii Message Board data.\n\n";
 static char cdb_filepath[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
 static char sd_filepath[] = "cdbackup.vff";
 
@@ -37,10 +38,24 @@ void init_video(int row, int col) {
 	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
 
 	// The console understands VT terminal escape codes
-	// This positions the cursor on row 2, column 0
-	// we can use variables for this with format codes too
-	// e.g. printf ("\x1b[%d;%dH", row, column );
 	printf("\x1b[%d;%dH", row, col);
+}
+
+bool confirmation(const char message[], int wait_time) {
+	printf(message);
+	sleep(wait_time);
+	printf("\nPress +/START to confirm.\nPress any other button to cancel.\n");
+
+	WPAD_ScanPads(); PAD_ScanPads();
+	u32 wii_down = 0; u16 gcn_down = 0;
+	while (! (wii_down || gcn_down) ) {
+		WPAD_ScanPads();
+		 PAD_ScanPads();
+		wii_down = WPAD_ButtonsDown(0);
+		gcn_down =  PAD_ButtonsDown(0);
+		VIDEO_WaitVSync();
+	}
+	return ( wii_down & WPAD_BUTTON_PLUS || gcn_down & PAD_BUTTON_START ) ? true : false; // 😃
 }
 
 s32 quit(s32 ret) {
@@ -148,6 +163,13 @@ s32 backup() {
 	size_t filesize;
 	errinfo error_info;
 
+	FILE* fp = fopen(sd_filepath, "rb");
+	if (fp) {
+		fclose(fp);
+		fp = NULL;
+		if(!confirmation("Backup file appears to exist; overwrite it?\n", 5)) return quit(user_abort);
+	}
+
 	printf("reading %s ...\n", cdb_filepath);
 
 	ret = read_nand_file(cdb_filepath, &fb, &filesize, &error_info);
@@ -194,6 +216,8 @@ s32 restore() {
 	size_t filesize;
 	errinfo error_info;
 
+	if(!confirmation("Are you sure you want to restore your message board data backup?\n", 5)) return quit(user_abort);
+
 	printf("reading %s ...\n", sd_filepath);
 	ret = read_fat_file(sd_filepath, &fb, &filesize, &error_info);
 	switch(ret) {
@@ -223,6 +247,12 @@ s32 restore() {
 			sleep(1);
 			break;
 
+		case -106:
+			printf("\nHey. You're not supposed to delete before restoring. Just restore.\n\nPress any button to return to the Wii menu, then come back.");
+			WPAD_ScanPads(); PAD_ScanPads();
+			while ( ! ( WPAD_ButtonsDown(0) || PAD_ButtonsDown(0) )  ) { WPAD_ScanPads(); PAD_ScanPads(); VIDEO_WaitVSync(); }
+			SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
+			break;
 		default:
 			printf("Error while writing file! (%d)\n", ret);
 			return ret;
@@ -230,6 +260,20 @@ s32 restore() {
 
 	free(fb);
 	return ok;
+}
+
+s32 delete() {
+	if(!confirmation("Are you sure you want to delete your message board data??\n", 10)) return quit(user_abort);
+
+	s32 ret = ISFS_Delete(cdb_filepath);
+	if (ret == -106) { // ENOENT
+		printf("\n.....the file doesn't even exist. What are you doing here?\n(%d)", ret);
+		sleep(2);
+		ret = ok;
+	}
+	else if (ret < 0) printf("Error deleting %s! (%d)", cdb_filepath, ret);
+	else printf("Deleted %s.\n", cdb_filepath);
+	return ret;
 }
 
 int main() {
@@ -252,7 +296,8 @@ int main() {
 	printf(header);
 	sleep(3);
 	printf("Press A to backup your message board data.\n");
-	printf("Press -/Y to restore your message board data.\n");
+	printf("Press +/Y to restore your message board data.\n");
+	printf("Press -/X to delete your message board data.\n");
 	printf("Press HOME/START to return to loader.\n\n");
 	while(true) {
 		WPAD_ScanPads();
@@ -260,7 +305,8 @@ int main() {
 		u32 wii_down = WPAD_ButtonsDown(0);
 		u32 gcn_down =  PAD_ButtonsDown(0);
 		if		(wii_down & WPAD_BUTTON_A		|| gcn_down & PAD_BUTTON_A)		{ ret = backup();	break; }
-		else if	(wii_down & WPAD_BUTTON_MINUS	|| gcn_down & PAD_BUTTON_Y)		{ ret = restore();	break; }
+		else if	(wii_down & WPAD_BUTTON_PLUS	|| gcn_down & PAD_BUTTON_Y)		{ ret = restore();	break; }
+		else if	(wii_down & WPAD_BUTTON_MINUS	|| gcn_down & PAD_BUTTON_X)		{ ret = delete();	break; }
 		else if	(wii_down & WPAD_BUTTON_HOME	|| gcn_down & PAD_BUTTON_START)	{ return ok; }
 		VIDEO_WaitVSync();
 	}
