@@ -1,313 +1,345 @@
+#define VERSION "1.2.0"
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
+#include <string.h>
+#include <errno.h>
 #include <gccore.h>
+#include <ogc/machine/processor.h>
 #include <wiiuse/wpad.h>
 #include <ogc/isfs.h>
-#include <malloc.h>
+#include <fat.h>
 
 #include "fatMounter.h"
+#include "tools.h"
 
-#define no_memory		-4011
-#define short_read		-4022
-#define short_write		-4021
-#define fat_open_failed	-4111
-#define ok				0
-#define user_abort		69
+#define MAXIMUM(max, size) ( ( size > max ) ? max : size )
+#define CHUNK_MAX 1048576 // the Wii menu creates a new cdb.vff by writing 20 * 1M, possibly any other newly created file
 
-static void *xfb = NULL;
-static GXRModeObj *rmode = NULL;
+#define user_abort 2976579765
 
-static char header[] = "cdbackup v1.1.0, by thepikachugamer\nBackup/Restore your Wii Message Board data.\n\n";
-static char cdb_filepath[ISFS_MAXPATH] ATTRIBUTE_ALIGN(32) = "/title/00000001/00000002/data/cdb.vff";
-static char sd_filepath[] = "cdbackup.vff";
+static fstats stats ATTRIBUTE_ALIGN(0x20);
 
-typedef struct {
-	size_t short_actual;
-} errinfo;
+const char
+	header[] = "cdbackup v" VERSION ", by thepikachugamer\n"
+			"Backup/Restore your Wii Message Board data.\n\n",
 
-void init_video(int row, int col) {
-	VIDEO_Init();
-	rmode = VIDEO_GetPreferredMode(NULL);
-	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
-	console_init(xfb,20,20,rmode->fbWidth,rmode->xfbHeight,rmode->fbWidth*VI_DISPLAY_PIX_SZ);
-	VIDEO_Configure(rmode);
-	VIDEO_SetNextFramebuffer(xfb);
-	VIDEO_SetBlack(FALSE);
-	VIDEO_Flush();
-	VIDEO_WaitVSync();
-	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
+	cdb_filepath[] = "/title/00000001/00000002/data/cdb.vff",
+	sd_filepath[] = "cdbackup.vff";
 
-	// The console understands VT terminal escape codes
-	printf("\x1b[%d;%dH", row, col);
-}
+void* FS_Read(const char* filepath, unsigned int* filesize, int* ec) {
+	printf(">> Reading %s from NAND...\n", filepath);
 
-bool confirmation(const char message[], int wait_time) {
-	printf(message);
-	sleep(wait_time);
-	printf("\nPress +/START to confirm.\nPress any other button to cancel.\n");
+	*ec = ISFS_Open(filepath, ISFS_OPEN_READ);
+	if (*ec < 0) return NULL;
+	int fd = *ec;
 
-	WPAD_ScanPads(); PAD_ScanPads();
-	u32 wii_down = 0; u16 gcn_down = 0;
-	while (! (wii_down || gcn_down) ) {
-		WPAD_ScanPads();
-		 PAD_ScanPads();
-		wii_down = WPAD_ButtonsDown(0);
-		gcn_down =  PAD_ButtonsDown(0);
-		VIDEO_WaitVSync();
-	}
-	return ( wii_down & WPAD_BUTTON_PLUS || gcn_down & PAD_BUTTON_START ) ? true : false; // 😃
-}
-
-s32 quit(s32 ret) {
-	printf("\nPress HOME/START to return to loader.\n");
-	while(true) {
-		WPAD_ScanPads();
-		PAD_ScanPads();
-		if (WPAD_ButtonsDown(0) & WPAD_BUTTON_HOME || PAD_ButtonsDown(0) & PAD_BUTTON_START) break;
-		VIDEO_WaitVSync();
-	}
-	UnmountSD();
-	UnmountUSB();
-	ISFS_Deinitialize();
-	return ret;
-}
-
-s32 read_nand_file(const char* filepath, u8* *buffer, u32* filesize, errinfo* error_info) {
-	s32 ret;
-	fstats stats ATTRIBUTE_ALIGN(32);
-
-	s32 fd = ISFS_Open(filepath, ISFS_OPEN_READ);
-	if (fd < 0) return fd;
-
-	ret = ISFS_GetFileStats(fd, &stats);
-	if (ret < 0) {
+	*ec = ISFS_GetFileStats(fd, &stats);
+	if (*ec < 0) {
 		ISFS_Close(fd);
-		return ret;
+		return NULL;
 	}
 	*filesize = stats.file_length;
 
-	*buffer = (u8*)malloc(*filesize);
-	if (*buffer == NULL) {
+	unsigned char* buffer = malloc(*filesize);
+	if (!buffer) {
 		ISFS_Close(fd);
-		return no_memory;
+		*ec = -ENOMEM;
+		return NULL;
 	}
 
-	ret = ISFS_Read(fd, *buffer, *filesize);
-	if (ret < 0) {
-		ISFS_Close(fd);
-		return ret;
+	unsigned int
+		chunks = ceil(*filesize / (double)CHUNK_MAX),
+		chunk = 0,
+		read_total = 0;
+	while(chunk < chunks) {
+		unsigned int chunk_size = MAXIMUM(CHUNK_MAX, *filesize - read_total);
+		*ec = ISFS_Read(fd, buffer + read_total, chunk_size);
+		printf("\r%u / %u bytes... [", read_total + (*ec < 0 ? 0 : *ec), *filesize);
+		for(int i = 0; i < (chunks - 1); i++)
+			putc(chunk > i ? '=' : ' ', stdout);
+		putc(']', stdout);
+		fflush(stdout);
+
+		if (*ec < 0) {
+			printf(" error! (%d)\n", *ec);
+			free(buffer);
+			ISFS_Close(fd);
+			return NULL;
+		} else if (*ec < chunk_size) {
+			printf("\nI asked /dev/fs for %u bytes and he came back with %u ...\n", chunk_size, chunk_size - *ec);
+			free(buffer);
+			ISFS_Close(fd);
+			*ec = -EIO;
+			return NULL;
+		}
+
+		read_total += *ec;
+		chunk++;
 	}
-	else if (ret < *filesize) {
-		error_info->short_actual = ret;
-		ISFS_Close(fd);
-		return short_read;
+
+	printf(" OK!\n");
+	ISFS_Close(fd);
+	*ec = 0;
+	return buffer;
+}
+
+void* FAT_Read(const char* filepath, unsigned int* filesize, int* ec) {
+	printf(">> Reading %s from FAT device...\n", filepath);
+
+	FILE* fp = fopen(filepath, "rb");
+	if (!fp) {
+		*ec = -ENOENT;
+		return fp;
+	};
+
+	fseek(fp, 0, SEEK_END);
+	*filesize = ftell(fp);
+	fseek(fp, 0, SEEK_SET);
+	if(!*filesize) {
+		printf("\x1b[41;30m!>> this file is 0 bytes, is it corrupt?\x1b[40;37m\n");
+		*ec = -EINVAL;
+		return NULL;
 	}
+
+	unsigned char* buffer = malloc(*filesize);
+	if(!buffer) {
+		*ec = -ENOMEM;
+		fclose(fp);
+		return buffer;
+	};
+
+	unsigned int
+		chunks = ceil(*filesize / (double)CHUNK_MAX),
+		chunk = 0,
+		read_total = 0;
+	while(chunk < chunks) {
+		unsigned int
+			chunk_size = MAXIMUM(CHUNK_MAX, *filesize - read_total),
+			read = fread(buffer + read_total, 1, chunk_size, fp);
+		printf("\r%u / %u bytes... [", read_total + read, *filesize);
+		for(int i = 0; i < (chunks - 1); i++)
+			putc(chunk > i ? '=' : ' ', stdout);
+		putc(']', stdout);
+		fflush(stdout);
+
+		if (read < chunk_size) {
+			printf("\nI asked for %u bytes and got %u ...\n", chunk_size, read);
+			*ec = -EIO;
+			free(buffer);
+			fclose(fp);
+			return NULL;
+		}
+
+		read_total += read;
+		chunk++;
+	}
+	fclose(fp);
+	printf(" OK!\n");
+	return buffer;
+
+}
+
+int FS_Write(const char* filepath, unsigned char* buffer, unsigned int filesize) {
+	printf(">> Writing to %s on NAND...\n", filepath);
+
+	int ret = 0;
+	int fd = ISFS_Open(filepath, ISFS_OPEN_WRITE);
+	if (fd < 0) return fd;
+
+	/*
+	int ret = ISFS_Write(fd, buffer, filesize);
+	if (ret < filesize)
+		ret = ret < 0 ? ret : -EIO
+	*/
+
+	unsigned int
+		chunks = ceil(filesize / (double)CHUNK_MAX),
+		chunk = 0,
+		written = 0;
+	while (chunk < chunks) {
+		unsigned int chunk_size = MAXIMUM(CHUNK_MAX, filesize - written);
+		ret = ISFS_Write(fd, buffer + written, chunk_size);
+		printf("\r%u / %u bytes... [", written + (ret < 0 ? 0 : ret) , filesize); // ret & (1 << 31) <-- why did i write that
+		for(int i = 0; i < (chunks - 1); i++)
+			putc(chunk > i ? '=' : ' ', stdout);
+		putc(']', stdout);
+		fflush(stdout);
+		if (ret < 0) {
+			printf(" error! (%d)\n", ret);
+			ISFS_Close(fd);
+			return ret;
+		} else if (ret < chunk_size) {
+			printf("\nI gave /dev/fs %u bytes and he came back with %u left ...\n\n", chunk_size, chunk_size - ret);
+			ISFS_Close(fd);
+			return -EIO;
+		}
+		written += ret;
+		chunk++;
+	}
+
+	printf(" OK!\n\n");
+	ISFS_Close(fd);
+	return ret;
+}
+
+int FAT_Write(const char* filepath, unsigned char* buffer, unsigned int filesize) {
+	printf(">> Writing to %s on FAT device...\n", filepath);
+
+	FILE *fp = fopen(filepath, "wb");
+	if (!fp) return ~0;
+
+	unsigned int
+		chunks = ceil(filesize / (double)CHUNK_MAX),
+		chunk = 0,
+		written = 0;
+	while (chunk < chunks) {
+		unsigned int chunk_size = MAXIMUM(CHUNK_MAX, filesize - written);
+		size_t wrote = fwrite(buffer + written, 1, chunk_size, fp);
+		printf("\r%u / %u bytes... [", written + wrote, filesize);
+		for(int i = 0; i < (chunks - 1); i++)
+			putc(chunk > i ? '=' : ' ', stdout);
+		putc(']', stdout);
+		fflush(stdout);
+		if (wrote < chunk_size) {
+			printf("\nfwrite() came back with %u bytes left...\n\n", wrote);
+			fclose(fp);
+			return -EIO;
+		}
+		written += wrote;
+		chunk++;
+	}
+
+	printf(" OK!\n\n");
+	fclose(fp);
 	return 0;
 }
 
-s32 read_fat_file(const char filepath[], u8* *buffer, u32 *filesize, errinfo *error_info) {
-	FILE *fd = fopen(filepath, "rb");
-	if (fd == NULL) return fat_open_failed;
-
-	fseek(fd, 0, SEEK_END);
-	*filesize = ftell(fd);
-	fseek(fd, 0, SEEK_SET);
-
-	*buffer = (u8*)malloc(*filesize);
-	if(*buffer == NULL) return no_memory;
-
-	size_t read = fread(*buffer, 1, *filesize, fd); // size_t --> unsigned long, not gonna return negative
-	if(read < *filesize) {
-		error_info->short_actual = read;
-		return short_read;
-	}
-	return ok;
-}
-
-s32 write_nand_file(const char filepath[ISFS_MAXPATH], u8 *buffer, u32 filesize, errinfo *error_info) {
-	s32 fd = ISFS_Open(filepath, ISFS_OPEN_WRITE);
-	if (fd < 0) return fd;
-
-	s32 ret = ISFS_Write(fd, buffer, filesize);
-	if (ret < 0) {
-		ISFS_Close(fd);
-		return ret;
-	}
-	else if (ret < filesize) {
-		error_info->short_actual = ret;
-		ISFS_Close(fd);
-		return short_write;
-	}
-	ISFS_Close(fd);
-	return ok;
-}
-
-s32 write_fat_file(const char* filepath, u8 *buffer, u32 filesize, errinfo* error_info) {
-	FILE *fd = fopen(filepath, "wb");
-	if (fd == NULL) return fat_open_failed;
-
-	size_t written = fwrite(buffer, 1, filesize, fd);
-	if(written < filesize) {
-		error_info->short_actual = written;
-		fclose(fd);
-		return short_write;
-	}
-	fflush(fd);
-	fclose(fd);
-	return ok;
-}
-
-s32 backup() {
-	s32 ret = ok;
-	u8 *fb = NULL;
-	size_t filesize;
-	errinfo error_info;
+int backup() {
+	int ret = 0;
+	unsigned int filesize;
 
 	FILE* fp = fopen(sd_filepath, "rb");
 	if (fp) {
 		fclose(fp);
 		fp = NULL;
-		if(!confirmation("Backup file appears to exist; overwrite it?\n", 5)) return quit(user_abort);
+		if(!confirmation("Backup file appears to exist; overwrite it?\n", 3)) return user_abort;
+	}
+	putc('\n', stdout);
+
+	unsigned char* buffer = FS_Read(cdb_filepath, &filesize, &ret);
+	if(ret < 0) {
+		printf("Error reading message board data! (%d)\n", ret);
+		return ret;
 	}
 
-	printf("reading %s ...\n", cdb_filepath);
-
-	ret = read_nand_file(cdb_filepath, &fb, &filesize, &error_info);
-	switch(ret) {
-		case no_memory:
-			printf("Could not allocate %d bytes of memory!\n", filesize);
-			return ret;
-		case short_read:
-			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
-			return ret;
-		case ok:
-			printf("OK! Read %d bytes.\n", filesize);
-			sleep(1);
-			break;
-
-		default:
-			printf("Error while reading file! (%d)\n", ret);
-			return ret;
+	ret = FAT_Write(sd_filepath, buffer, filesize);
+	if (ret < 0) {
+		printf("Error writing backup file! (%d)\n", ret);
+		return ret;
 	}
 
-	printf("writing to %s ...\n", sd_filepath);
-
-	ret = write_fat_file(sd_filepath, fb, filesize, &error_info);
-	switch(ret) {
-		case fat_open_failed:
-			printf("Could not open handle to file!\n");
-			return ret;
-		case short_write:
-			printf("Short write! Only got in %d bytes out of %d; do you have enough free space?\n", error_info.short_actual, filesize);
-			return ret;
-		case ok:
-			printf("OK! Wrote %d bytes.\n", filesize);
-			sleep(1);
-			break;
-	}
-
-	free(fb);
-	return ok;
+	free(buffer);
+	printf("All done!\n");
+	return 0;
 }
 
-s32 restore() {
-	s32 ret;
-	u8 *fb = NULL;
-	size_t filesize;
-	errinfo error_info;
+int restore() {
+	int ret = 0;
+	unsigned int filesize;
 
-	if(!confirmation("Are you sure you want to restore your message board data backup?\n", 5)) return quit(user_abort);
+	if(!confirmation("Are you sure you want to restore your message board data backup?\n", 3)) return user_abort;
 
-	printf("reading %s ...\n", sd_filepath);
-	ret = read_fat_file(sd_filepath, &fb, &filesize, &error_info);
-	switch(ret) {
-		case fat_open_failed:
-			printf("Could not open handle to file; does it exist?\n");
-			return ret;
-		case no_memory:
-			printf("Could not allocate %d bytes of memory!", filesize);
-			return ret;
-		case short_read:
-			printf("Short read! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
-			return ret;
-		case ok:
-			printf("OK! Read %d bytes.\n", filesize);
-			sleep(1);
-			break;
+	unsigned char* buffer = FAT_Read(sd_filepath, &filesize, &ret);
+	if(ret < 0) {
+		printf("Error reading backup file! (%d)\n", ret);
+		if(ret == -ENOENT)
+			printf("(does it exist?)\n");
+		return ret;
 	}
 
-	printf("writing to %s ...\n", cdb_filepath);
-	ret = write_nand_file(cdb_filepath, fb, filesize, &error_info);
-	switch(ret) {
-		case short_write:
-			printf("Short write! Only got %d bytes out of %d.\n", error_info.short_actual, filesize);
-			return ret;
-		case ok:
-			printf("OK! Wrote %d bytes.\n", filesize);
-			sleep(1);
-			break;
+	if(memcmp(buffer, "VFF ", 4)) {
+		printf("\x1b[41;30m this isn't a VFF file... [0x%08x != 0x%08x (\"VFF \")] \x1b[40;37m", *(unsigned int*)buffer, 0x56464620);
+		free(buffer);
+		return -EINVAL;
+	}
 
-		case -106:
-			printf("\nHey. You're not supposed to delete before restoring. Just restore.\n\nPress any button to return to the Wii menu, then come back.");
-			WPAD_ScanPads(); PAD_ScanPads();
-			while ( ! ( WPAD_ButtonsDown(0) || PAD_ButtonsDown(0) )  ) { WPAD_ScanPads(); PAD_ScanPads(); VIDEO_WaitVSync(); }
+	ret = FS_Write(cdb_filepath, buffer, filesize);
+	if (ret < 0) {
+		printf("Error writing backup file! (%d)\n", ret);
+		if(ret == -106) {
+			printf("* Please don't delete the data before restoring your backup...\n");
+			sleep(1);
+
+			printf("Press any button to return to the Wii Menu.");
+			while(!wii_down) { input_scan(); VIDEO_WaitVSync(); }
 			SYS_ResetSystem(SYS_RETURNTOMENU, 0, 0);
-			break;
-		default:
-			printf("Error while writing file! (%d)\n", ret);
-			return ret;
+		}
+		return ret;
 	}
 
-	free(fb);
-	return ok;
+	free(buffer);
+	printf("All done!\n");
+	return 0;
 }
 
-s32 delete() {
-	if(!confirmation("Are you sure you want to delete your message board data??\n", 10)) return quit(user_abort);
+int delete() {
+	if(!confirmation("Are you sure you want to delete your message board data??\n", 6)) return user_abort;
 
-	s32 ret = ISFS_Delete(cdb_filepath);
+	int ret = ISFS_Delete(cdb_filepath);
 	if (ret == -106) { // ENOENT
-		printf("\n.....the file doesn't even exist. What are you doing here?\n(%d)", ret);
-		sleep(2);
-		ret = ok;
+		printf("\nYou already deleted it. (%d)", ret);
+		sleep(3);
+		ret = 0;
 	}
-	else if (ret < 0) printf("Error deleting %s! (%d)", cdb_filepath, ret);
-	else printf("Deleted %s.\n", cdb_filepath);
+	else if (ret < 0)
+		printf("Error deleting %s! (%d)", cdb_filepath, ret);
+	else
+		printf("Deleted %s.\n", cdb_filepath);
+
 	return ret;
 }
 
 int main() {
+	int ret = ~1;
+
 	init_video(2, 0);
+	printf(header);
 	WPAD_Init();
 	PAD_Init();
-	s32 ret = ISFS_Initialize();
-	if (ret < 0) {
-		printf("ISFS_Initialize returned %d.\nNever seen this happen, however, it just did. Always prepare for the worst.\n", ret);
-		return quit(ret);
-	}
+	ISFS_Initialize(); // i'll just hit enotinit on the attempt to open. dont care
 
-	if (MountSD() > 0) chdir("sd:/");
-	else if (MountUSB()) chdir("usb:/");
+	if (MountSD() > 0)
+		chdir("sd:/");
+	else if (MountUSB())
+		chdir("usb:/");
 	else {
 		printf("Could not mount any storage device!\n");
-		return quit(-1);
+		return quit(~0);
 	}
 
-	printf(header);
-	sleep(3);
-	printf("Press A to backup your message board data.\n");
-	printf("Press +/Y to restore your message board data.\n");
-	printf("Press -/X to delete your message board data.\n");
-	printf("Press HOME/START to return to loader.\n\n");
-	while(true) {
-		WPAD_ScanPads();
-		PAD_ScanPads();
-		u32 wii_down = WPAD_ButtonsDown(0);
-		u32 gcn_down =  PAD_ButtonsDown(0);
-		if		(wii_down & WPAD_BUTTON_A		|| gcn_down & PAD_BUTTON_A)		{ ret = backup();	break; }
-		else if	(wii_down & WPAD_BUTTON_PLUS	|| gcn_down & PAD_BUTTON_Y)		{ ret = restore();	break; }
-		else if	(wii_down & WPAD_BUTTON_MINUS	|| gcn_down & PAD_BUTTON_X)		{ ret = delete();	break; }
-		else if	(wii_down & WPAD_BUTTON_HOME	|| gcn_down & PAD_BUTTON_START)	{ return ok; }
+	sleep(2);
+	printf(
+		"Press A to backup your message board data.\n"
+		"Press +/Y to restore your message board data.\n"
+		"Press -/X to delete your message board data.\n"
+		"Press HOME/START to return to loader.\n\n");
+
+	while(ret == ~1) {
+		input_scan();
+		if (input_pressed(input_a))
+			ret = backup();
+
+		else if (input_pressed(input_start))
+			ret = restore();
+
+		else if (input_pressed(input_select))
+			ret = delete();
+
+		else if (input_pressed(input_home))
+			return user_abort;
+
 		VIDEO_WaitVSync();
 	}
 	return quit(ret);
