@@ -77,11 +77,27 @@ int restore() {
 	}
 	printf("OK!\n");
 
-	if(memcmp(buffer, "VFF ", 4) != 0) {
-		printf("\x1b[41;30m this isn't a VFF file... [0x%08x != 0x%08x (\"VFF \")] \x1b[40;37m", *(unsigned int*)buffer, 0x56464620);
+	printf("Verifying... ");
+	if (!filesize) {
+		printf("this file is 0 bytes..?\n");
 		free(buffer);
 		return -EINVAL;
 	}
+
+	else if (memcmp(buffer, "VFF ", 4) != 0) {
+		printf("this isn't a VFF file!\n[0x%08x != 0x%08x \"VFF \"]\n", *(unsigned int*)buffer, 0x56464620);
+		free(buffer);
+		return -EINVAL;
+	}
+
+	else if (filesize < (20 * 1024 * 1024)) {
+		printf("this file is smaller than usual... (<20MiB)\n");
+		free(buffer);
+		return -EINVAL;
+	}
+
+	else
+		printf("OK!\n");
 
 	printf("Writing to %s on NAND...\n", cdb_filepath);
 	ret = FS_Write(cdb_filepath, buffer, filesize, &progressbar);
