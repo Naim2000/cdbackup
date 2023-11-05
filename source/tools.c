@@ -1,6 +1,7 @@
 #include "tools.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <wiiuse/wpad.h>
 #include <gccore.h>
 
@@ -13,7 +14,7 @@ uint32_t wii_down = 0;
 uint16_t gcn_down = 0;
 uint16_t input_btns = 0;
 
-void init_video(int row, int col) {
+void init_video() {
 	VIDEO_Init();
 	rmode = VIDEO_GetPreferredMode(NULL);
 	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
@@ -25,12 +26,12 @@ void init_video(int row, int col) {
 	VIDEO_WaitVSync();
 	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
 
-	printf("\x1b[%d;%dH", row, col);
+	printf("\x1b[%d;%dH", 2, 0);
 }
 
-int quit(int ret) {
-	UnmountSD();
-	UnmountUSB();
+void quit(int ret) {
+	unmountSD();
+	unmountUSB();
 	ISFS_Deinitialize();
 	printf("\nPress HOME/START to return to loader.");
 	input_scan();
@@ -39,7 +40,7 @@ int quit(int ret) {
 		VIDEO_WaitVSync();
 	}
 	WPAD_Shutdown();
-	return ret;
+	exit(ret);
 }
 
 void input_scan(void) {

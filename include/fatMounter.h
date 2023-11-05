@@ -1,19 +1,7 @@
-#ifndef _FATMOUNTER_H_
-#define _FATMOUNTER_H_
+#include <stdbool.h>
 
-#ifdef __cplusplus
-extern "C"
-{
-#endif
+bool mountSD();
+void unmountSD();
 
-// Prototypes
-int MountSD(void);
-void UnmountSD(void);
-int MountUSB(void);
-void UnmountUSB(void);
-
-#ifdef __cplusplus
-}
-#endif
-
-#endif
+bool mountUSB();
+void unmountUSB();

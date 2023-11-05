@@ -23,10 +23,9 @@ extern uint16_t input_btns;
 extern uint32_t wii_down;
 extern uint16_t gcn_down;
 
-void init_video(int row, int col);
+[[gnu::constructor]] void init_video();
 void input_scan(void);
-
-int quit(int ret);
+[[noreturn]] void quit(int ret);
 
 bool confirmation(const char* message, unsigned int wait_time);
 
