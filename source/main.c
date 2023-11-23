@@ -2,13 +2,13 @@
 
 #include <stdio.h>
 #include <stdlib.h>
-#include <unistd.h>
 #include <math.h>
 #include <string.h>
 #include <errno.h>
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include <ogc/isfs.h>
+#include <runtimeiospatch.h>
 #include <fat.h>
 
 #include "fatMounter.h"
@@ -81,7 +81,7 @@ int restore() {
 	if (!filesize) {
 		printf("this file is 0 bytes..?\n");
 		free(buffer);
-		return -EINVAL;
+		return -ENODATA;
 	}
 
 	else if (memcmp(buffer, "VFF ", 4) != 0) {
@@ -148,10 +148,12 @@ int main() {
 
 	if (!mountSD() && !mountUSB()) {
 		printf("Could not mount any storage device!\n");
-		quit(-ENXIO);
+		quit(-ENODEV);
 	}
 
-	sleep(2);
+	if (IosPatch_RUNTIME(nand_permissions, false) < 0)
+		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
+
 	printf(
 		"Press A to backup your message board data.\n"
 		"Press +/Y to restore your message board data.\n"
