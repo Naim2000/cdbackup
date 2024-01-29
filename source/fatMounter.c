@@ -1,62 +1,102 @@
-#include "fatMounter.h"
-
+#include <stdio.h>
+#include <unistd.h>
+#include <errno.h>
 #include <fat.h>
 #include <sdcard/wiisd_io.h>
 #include <ogc/usbstorage.h>
-#include <unistd.h>
-#include <errno.h>
 
-static const DISC_INTERFACE *sd_card = &__io_wiisd,
-	*usb_msc = &__io_usbstorage;
+#include "fatMounter.h"
+#include "tools.h"
 
-static bool sd_mounted = false,
-	usb_mounted = false;
+// Inspired by YAWM ModMii Edition
+typedef struct {
+	const char* friendlyName;
+	const char* name;
+	const DISC_INTERFACE* disk;
+	long mounted;
+} FATDevice;
 
-bool mountSD() {
-	if (sd_mounted) return sd_mounted;
+#define NUM_DEVICES 2
+static FATDevice devices[NUM_DEVICES] = {
+	{ "SD card slot",				"sd",	&__io_wiisd },
+	{ "USB mass storage device",	"usb",	&__io_usbstorage},
+};
 
-	sd_card->startup();
-	if (!sd_card->isInserted()) {
-		sd_card->shutdown();
-		errno = ENODEV;
+static FATDevice* active = NULL;
+
+bool FATMount() {
+	FATDevice* attached[NUM_DEVICES] = {};
+	int i = 0;
+
+	for (int ii = 0; ii < NUM_DEVICES; ii++) {
+		FATDevice* dev = devices + i;
+
+		dev->disk->startup();
+		if (dev->disk->isInserted()) {
+			printf("[+]	Device detected:	\"%s\"\n", dev->friendlyName);
+			attached[i++] = dev;
+		}
+		else dev->disk->shutdown();
+	}
+
+	if (i == 0) {
+		puts("\x1b[30;1m[?]	No storage devices are attached.\x1b[39m");
 		return false;
 	}
-	sd_mounted = fatMountSimple("sd", sd_card);
-	chdir("sd:/");
-	return sd_mounted;
-}
 
-void unmountSD() {
-	if (sd_mounted) {
-		fatUnmount("sd");
-		sd_card->shutdown();
-		sd_mounted = false;
+	FATDevice* target = NULL;
+	if (i == 1) target = attached[0];
+	else {
+		puts("[*]	Choose a device to mount.");
+
+		int index = 0;
+		bool selected = false;
+		while (!selected) {
+			clearln();
+			printf("[*]	Device: < %s >", attached[index]->friendlyName);
+
+			while (true) {
+				input_scan();
+
+				if 		(input_pressed(input_left))		{ if (index) index--; break; }
+				else if (input_pressed(input_right))	{ if (++index == i) index = 0; break; }
+				else if (input_pressed(input_a))		{ target = attached[index]; selected = true; break; }
+				else if (input_pressed(input_home))		{ selected = true; break; }
+			}
+		}
+		clearln();
 	}
-}
 
-bool mountUSB() {
-	if (usb_mounted) return usb_mounted;
+	if (!target) return false;
 
-	usb_msc->startup();
-	if (!usb_msc->isInserted()) {
-		usb_msc->shutdown();
-		errno = ENODEV;
-		return false;
+	printf ("[*]	Mounting %s:/ ... ", target->name);
+	if (fatMountSimple(target->name, target->disk)) {
+		printf("OK!\n\n");
+		target->mounted = true;
+		active = target;
 	}
-
-//	for(int r = 0; r < 10; r++) {
-		usb_mounted = fatMountSimple("usb", usb_msc);
-//		if(usb_mounted) break;
-//	}
-	chdir("usb:/");
-	return usb_mounted;
-}
-
-void unmountUSB() {
-	if (usb_mounted) {
-		fatUnmount("usb");
-		usb_msc->shutdown();
-		usb_mounted = false;
+	else {
+		printf("Failed!\n\n");
+		target->mounted = false;
+		target->disk->shutdown();
 	}
+	
+	return target->mounted;
 }
+
+void FATUnmount() {
+	for (int i = 0; i < NUM_DEVICES; i++) {
+		FATDevice* dev = devices + i;
+
+		if (dev->mounted) {
+			fatUnmount(dev->name);
+			dev->disk->shutdown();
+			dev->mounted = false;
+		}
+	}
+	
+	active = NULL;
+}
+
+const char* GetActiveDeviceName() { return active? active->name : NULL; }
 

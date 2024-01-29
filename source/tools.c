@@ -9,6 +9,7 @@
 
 static void *xfb = NULL;
 static GXRModeObj *rmode = NULL;
+static int conX = 0, conY = 0;
 
 uint32_t wii_down = 0;
 uint16_t gcn_down = 0;
@@ -27,11 +28,17 @@ void init_video() {
 	if(rmode->viTVMode&VI_NON_INTERLACE) VIDEO_WaitVSync();
 
 	printf("\x1b[%d;%dH", 2, 0);
+	CON_GetMetrics(&conX, &conY);
+}
+
+void clearln() {
+	putchar('\r');
+	for (int i = 0; i < conX - 1; i++) putchar(' ');
+	putchar('\r');
 }
 
 void quit(int ret) {
-	unmountSD();
-	unmountUSB();
+	FATUnmount();
 	ISFS_Deinitialize();
 	printf("\nPress HOME/START to return to loader.");
 	input_scan();
@@ -81,7 +88,7 @@ void input_scan(void) {
 bool confirmation(const char* message, unsigned int wait_time) {
 	printf(message);
 	sleep(wait_time);
-	printf("\nPress +/START to confirm.\nPress any other button to cancel.\n");
+	printf("\n\nPress +/START to confirm.\nPress any other button to cancel.\n");
 
 	input_scan();
 	while (!input_pressed(~0) ) {
