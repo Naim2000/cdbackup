@@ -16,32 +16,9 @@
 #include "fatMounter.h"
 #include "tools.h"
 #include "fs.h"
-
-/* This will be put somewhere better soon enough */
-struct VFFHeader {
-	uint32_t magic;			// 'VFF ' 0x56464620
-	uint16_t BOM;			// 0xFEFF ("never checked"?)
-	uint16_t length;		// Length of...... of what
-	uint32_t fileSize;
-	uint16_t size;			// 0x0020
-
-	char padding[18];
-};
-static_assert(sizeof(struct VFFHeader) == 0x20, "Wrong size for VFF header!");
-
-static inline bool sanityCheckVFFHeader(struct VFFHeader hdr, size_t filesize) {
-	return
-		hdr.magic		== 0x56464620
-	&&	hdr.BOM			== 0xFEFF
-//	&&	length			== 0x0100
-	&&	hdr.fileSize	== filesize
-	&&	hdr.size		== 0x20;
-}
+#include "vff.h"
 
 int backup() {
-	int ret = 0;
-	size_t filesize = 0;
-
 	char filepath[PATH_MAX];
 	sprintf(filepath, "%s:%s", GetActiveDeviceName(), FAT_TARGET);
 	if (!FAT_GetFileSize(filepath, 0)) {
@@ -53,7 +30,6 @@ int backup() {
 }
 
 int restore() {
-	int ret = 0;
 	size_t filesize = 0;
 	struct VFFHeader header = {};
 
@@ -73,7 +49,7 @@ int restore() {
 		return -errno;
 	}
 
-	if (!sanityCheckVFFHeader(header, filesize)) {
+	if (!sanityCheckVFFHeader(&header, filesize)) {
 		puts("Bad VFF header!");
 
 		return -EBADF;
@@ -108,11 +84,110 @@ int delete() {
 	return ret;
 }
 
+static int copytree(const char* src, const char* dst)
+{
+	char path[256], pathB[256];
+	unsigned char buffer[0x200];
+
+	FRESULT fres;
+	DIR dp[1] = {};
+	FILINFO st;
+
+	puts(src);
+
+	fres = f_opendir(dp, src);
+	if (fres != FR_OK) {
+		printf("f_opendir failed! (%i)\n", fres);
+		return fres;
+	}
+
+	mkdir(dst, 0644);
+
+	while ( ((fres = f_readdir(dp, &st)) == FR_OK) && st.fname[0] )
+	{
+		sprintf(path,  "%s/%s", src, st.fname);
+		sprintf(pathB, "%s/%s", dst, st.fname);
+
+		if (st.fattrib & AM_DIR)
+		{
+			copytree(path, pathB);
+		}
+		else
+		{
+			FIL fp[1];
+
+			puts(path);
+
+			fres = f_open(fp, path, FA_READ);
+			if (fres != FR_OK)
+			{
+				printf("%s: f_open() failed (%i)\n", path, fres);
+				break;
+			}
+
+			FILE* fp_B = fopen(pathB, "wb");
+			if (!fp_B)
+			{
+				perror(pathB);
+				f_close(fp);
+				break;
+			}
+
+			UINT read, left = st.fsize;
+			while ( ((fres = f_read(fp, buffer, sizeof(buffer), &read)) == FR_OK) && read)
+			{
+				if (!fwrite(buffer, read, 1, fp_B))
+				{
+					perror(pathB);
+					break;
+				}
+				left -= read;
+			}
+
+			f_close(fp);
+			fclose(fp_B);
+
+			if (left)
+				break;
+		}
+	}
+
+	f_closedir(dp);
+
+	return fres;
+}
+
+int extract(void)
+{
+	FATFS fs = {};
+
+	char filepath[PATH_MAX];
+	sprintf(filepath, "%s:%s", GetActiveDeviceName(), FAT_TARGET);
+	FILE* fp = fopen(filepath, "rb");
+	if (!fp) {
+		perror(filepath);
+		return -errno;
+	}
+
+	f_mount(&fs, "vff:", 0);
+
+	int ret = VFFInit(fp, &fs);
+	if (ret < 0)
+		return ret;
+
+	sprintf(filepath, "%s:/cdb", GetActiveDeviceName());
+	ret = copytree("vff:", filepath);
+	printf("OK!\n");
+
+	f_unmount("vff:");
+	return ret;
+}
+
 int main() {
 
-	puts("cdbackup " VERSION ", by thepikachugamer");
-	puts("Backup/Restore your Wii Message Board data.");
-	puts("");
+	puts(
+		"cdbackup " VERSION ", by thepikachugamer\n"
+		"Backup/Restore your Wii Message Board data.\n");
 
 	WPAD_Init();
 	PAD_Init();
@@ -128,6 +203,7 @@ int main() {
 		"Press A to backup your message board data.\n"
 		"Press +/Y to restore your message board data.\n"
 		"Press -/X to delete your message board data.\n"
+		"Press 1 to extract VFF.\n"
 		"Press HOME/START to return to loader.\n\n");
 
 	while (true) {
@@ -135,13 +211,13 @@ int main() {
 		if (input_pressed(input_a)) quit(backup());
 		else if (input_pressed(input_start)) quit(restore());
 		else if (input_pressed(input_select)) quit(delete());
+		else if (input_pressed(input_x)) quit(extract());
 
 		else if (input_pressed(input_home))
 			return user_abort;
 
 		VIDEO_WaitVSync();
 	}
-
 
 	return 0;
 }
