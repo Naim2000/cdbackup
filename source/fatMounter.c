@@ -58,10 +58,10 @@ bool FATMount() {
 			while (true) {
 				input_scan();
 
-				if 		(input_pressed(input_left))		{ if (index) index--; break; }
-				else if (input_pressed(input_right))	{ if (++index == i) index = 0; break; }
-				else if (input_pressed(input_a))		{ target = attached[index]; selected = true; break; }
-				else if (input_pressed(input_home))		{ selected = true; break; }
+				if 		(input_pressed(left))		{ if (index) index--; break; }
+				else if (input_pressed(right))	{ if (++index == i) index = 0; break; }
+				else if (input_pressed(a))		{ target = attached[index]; selected = true; break; }
+				else if (input_pressed(home))		{ selected = true; break; }
 			}
 		}
 		clearln();

@@ -11,11 +11,9 @@ static FILE* s_vffFile = NULL;
 
 bool sanityCheckVFFHeader(struct VFFHeader* hdr, size_t filesize) {
 	return
-		hdr->magic		== 0x56464620
-	&&	hdr->BOM		== 0xFEFF
-//	&&	hdr.length		== 0x0100
-	&&	hdr->fileSize	== filesize
-	&&	hdr->clusterSize== 0x20;
+		hdr->magic		 == 0x56464620
+	&&	hdr->BOM		 == 0xFEFF
+	&&	hdr->fileSize	 == filesize;
 }
 
 void VFFShutdown() { s_vffFile = NULL; }

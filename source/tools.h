@@ -3,7 +3,8 @@
 #include <stddef.h>
 #include <stdbool.h>
 
-enum {
+enum
+{
     input_up        = 0x0001,
     input_down      = 0x0002,
     input_left      = 0x0004,
@@ -18,7 +19,7 @@ enum {
 };
 
 extern uint16_t input_btns;
-#define input_pressed(x) (input_btns & x)
+#define input_pressed(x) (input_btns & input_##x)
 
 extern uint32_t wii_down;
 extern uint16_t gcn_down;
@@ -26,6 +27,7 @@ extern uint16_t gcn_down;
 __attribute((constructor))
 void init_video();
 void clearln();
+void clear();
 void input_scan(void);
 void quit(int ret);
 

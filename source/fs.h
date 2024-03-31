@@ -9,7 +9,7 @@ typedef int (*ProgressCallback)(size_t now, size_t total, void* userp);
 typedef ssize_t (*ReadCallback)(void* buffer, size_t len, void* userp);
 
 #ifndef FS_CHUNK
-#define FS_CHUNK 0x100000
+#define FS_CHUNK 0x4000
 #endif
 
 int NAND_GetFileSize(const char* filepath, size_t*);

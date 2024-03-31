@@ -15,6 +15,7 @@
 
 #include "fatMounter.h"
 #include "tools.h"
+#include "menu.h"
 #include "fs.h"
 #include "vff.h"
 
@@ -147,8 +148,9 @@ static int copytree(const char* src, const char* dst)
 			f_close(fp);
 			fclose(fp_B);
 
-			if (left)
+			if (left) {
 				break;
+			}
 		}
 	}
 
@@ -183,12 +185,46 @@ int extract(void)
 	return ret;
 }
 
+int remount(void)
+{
+	FATUnmount();
+	return (int)FATMount();
+}
+
+static MainMenuItem items[5] =
+{
+	{
+		"Backup",
+		"\x1b[32;1m", // light green
+		backup
+	},
+
+	{
+		"Restore",
+		"\x1b[31;1m", // light red
+		restore
+	},
+
+	{
+		"Delete",
+		"\x1b[41;1m\x1b[30m", // Black on light red
+		delete
+	},
+
+	{
+		"Extract",
+		"\x1b[34;1m", // light blue
+		extract
+	},
+
+	{
+		"Switch device",
+		"\x1b[33;1m", // light yellow
+		remount
+	},
+};
+
 int main() {
-
-	puts(
-		"cdbackup " VERSION ", by thepikachugamer\n"
-		"Backup/Restore your Wii Message Board data.\n");
-
 	WPAD_Init();
 	PAD_Init();
 	ISFS_Initialize();
@@ -199,25 +235,6 @@ int main() {
 	if (IosPatch_RUNTIME(nand_permissions, false) < 0)
 		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
 
-	printf(
-		"Press A to backup your message board data.\n"
-		"Press +/Y to restore your message board data.\n"
-		"Press -/X to delete your message board data.\n"
-		"Press 1 to extract VFF.\n"
-		"Press HOME/START to return to loader.\n\n");
-
-	while (true) {
-		input_scan();
-		if (input_pressed(input_a)) quit(backup());
-		else if (input_pressed(input_start)) quit(restore());
-		else if (input_pressed(input_select)) quit(delete());
-		else if (input_pressed(input_x)) quit(extract());
-
-		else if (input_pressed(input_home))
-			return user_abort;
-
-		VIDEO_WaitVSync();
-	}
-
+	quit(MainMenu(items, 5));
 	return 0;
 }

@@ -12,9 +12,12 @@
 __aligned(0x20)
 static char fsBuffer[FS_CHUNK];
 
+#define PROGRESSBAR_WIDTH 20
 int progressbar(size_t read, size_t total, void* userp) {
 	printf("\r[\x1b[42;1m");
-	for (size_t i = 0; i < total; i += FS_CHUNK)  {
+
+	unsigned chunk = total / PROGRESSBAR_WIDTH;
+	for (size_t i = 0; i < total; i += chunk)  {
 		if (i > read)
 			printf("\x1b[40m");
 
@@ -167,20 +170,6 @@ int FAT_Write(const char* filepath, const void* buffer, size_t filesize, Progres
 		return -EIO;
 }
 
-static void DoubleProgressBar(size_t total, size_t p1, size_t p2) {
-	printf("\r[\x1b[42;1m");
-	for (size_t i = 0; i < total; i += FS_CHUNK)  {
-		if (i > p1) printf("\x1b[47;1m");
-		if (i > p2) printf("\x1b[40m");
-
-		putchar(' ');
-	}
-
-	float mb_done = MIN(p1, p2) / 0x100000p0;
-	float mb_total= total / 0x100000p0;
-	printf("\x1b[40m] %.2f / %.2fMB (%.2f%%) ", mb_done, mb_total, (mb_done / mb_total) * 100);
-}
-
 int NANDBackupFile(const char* filepath, const char* dest) {
 	int ret, fd;
 	size_t fsize = 0;
@@ -192,6 +181,8 @@ int NANDBackupFile(const char* filepath, const char* dest) {
 		printf("%s: retreiving file size failed (%i)\n", filepath, ret);
 		return ret;
 	}
+
+	progressbar(0, fsize, 0);
 
 	fd = ret = ISFS_Open(filepath, ISFS_OPEN_READ);
 	if (ret < 0) {
@@ -208,13 +199,10 @@ int NANDBackupFile(const char* filepath, const char* dest) {
 
 	size_t total = 0;
 
-	DoubleProgressBar(fsize, 0, 0);
 	while (total < fsize) {
 		ret = ISFS_Read(fd, fsBuffer, FS_CHUNK);
 		if (ret <= 0)
 			break;
-
-		DoubleProgressBar(fsize, total + ret, total);
 
 		if (!fwrite(fsBuffer, ret, 1, fp)) {
 			ret = -errno;
@@ -222,7 +210,8 @@ int NANDBackupFile(const char* filepath, const char* dest) {
 		}
 		
 		total += ret;
-		DoubleProgressBar(fsize, total, total);
+
+		progressbar(total, fsize, 0);
 	}
 	ISFS_Close(fd);
 	fclose(fp);
@@ -248,6 +237,8 @@ int NANDRestoreFile(const char* filepath, const char* dest) {
 		return ret;
 	}
 
+	progressbar(0, fsize, 0);
+
 	fd = ret = ISFS_Open(dest, ISFS_OPEN_WRITE);
 	if (ret < 0) {
 		printf("%s: failed to open (%i)\n", dest, ret);
@@ -263,7 +254,7 @@ int NANDRestoreFile(const char* filepath, const char* dest) {
 
 	size_t total = 0;
 
-	DoubleProgressBar(fsize, 0, 0);
+
 	while (total < fsize) {
 		size_t read = fread(fsBuffer, 1, FS_CHUNK, fp);
 		if (!read) {
@@ -271,14 +262,12 @@ int NANDRestoreFile(const char* filepath, const char* dest) {
 			break;
 		}
 
-		DoubleProgressBar(fsize, total + read, total);
-
 		ret = ISFS_Write(fd, fsBuffer, read);
 		if (ret != read)
 			break;
 		
 		total += ret;
-		DoubleProgressBar(fsize, total, total);
+		progressbar(total, fsize, 0);
 	}
 	ISFS_Close(fd);
 	fclose(fp);

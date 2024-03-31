@@ -6,18 +6,22 @@
 #include "fatfs/ff.h"
 #include "fatfs/diskio.h"
 
-struct VFFHeader {
+struct VFFHeader
+{
 	uint32_t magic;			// 'VFF ' 0x56464620
 	uint16_t BOM;			// 0xFEFF ("never checked"?)
-	uint16_t length;		// Length of...... of what
+	uint16_t unk;
 	uint32_t fileSize;
-	uint16_t clusterSize;	// 0x0020
+	uint16_t clusterSize;
+	uint16_t empty;
+	uint16_t unknown;
 
-	char padding[18];
+	char padding[14];
 };
 static_assert(sizeof(struct VFFHeader) == 0x20, "Wrong size for VFF header!");
 
-enum {
+enum
+{
     VFF_SECTORSIZE = 0x200
 };
 

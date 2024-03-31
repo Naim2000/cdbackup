@@ -31,6 +31,12 @@ void init_video() {
 	CON_GetMetrics(&conX, &conY);
 }
 
+void clear() {
+	VIDEO_WaitVSync();
+	VIDEO_ClearFrameBuffer(rmode, xfb, COLOR_BLACK);
+	printf("\x1b[0;0H");
+}
+
 void clearln() {
 	putchar('\r');
 	for (int i = 0; i < conX - 1; i++) putchar(' ');
@@ -42,7 +48,7 @@ void quit(int ret) {
 	ISFS_Deinitialize();
 	printf("\nPress HOME/START to return to loader.");
 	input_scan();
-	while(!input_pressed(input_home)) {
+	while(!input_pressed(home)) {
 		input_scan();
 		VIDEO_WaitVSync();
 	}
@@ -91,10 +97,10 @@ bool confirmation(const char* message, unsigned int wait_time) {
 	printf("\n\nPress +/START to confirm.\nPress any other button to cancel.\n");
 
 	input_scan();
-	while (!input_pressed(~0) ) {
+	while (!input_btns) {
 		input_scan();
 		VIDEO_WaitVSync();
 	}
-	return input_pressed(input_start);
+	return input_pressed(start);
 }
 
