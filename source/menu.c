@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <ogc/consol.h>
 
 #include "config.h"
 #include "tools.h"

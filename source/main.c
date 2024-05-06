@@ -10,7 +10,7 @@
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include <ogc/isfs.h>
-#include <runtimeiospatch.h>
+#include <libpatcher.h>
 #include <fat.h>
 
 #include "config.h"
@@ -88,32 +88,44 @@ int delete() {
 	return ret;
 }
 
-static void export_cb(const char* path, FILINFO* st)
+static int export_cb(const char* path, FILINFO* st)
 {
-	FIL fp[1];
 	int res;
 
-	if (!strcmp(st->fname, "cdb.conf")) return;
-
 	uint32_t sendtime_x = 0;
-	time_t sendtime = 0;
+	time_t sendtime;
 	struct tm tm_sendtime = {};
-	sscanf(st->fname, "%X.000", &sendtime_x);
-	sendtime = sendtime_x + SECONDS_TO_2000;
+
+	FIL fp[1];
+	struct CDBAttrHeader* cdbattr = NULL;
+	struct CDBFILE* cdbfile = NULL;
+	char outpath[PATH_MAX];
+	FILE* text = NULL;
+
+	if (!strcmp(st->fname, "cdb.conf")) return 0;
+
+	if (!sscanf(st->fname, "%X.000", &sendtime_x))
+	{
+		printf("%s: Invalid file name(?)\n", path);
+		return -EINVAL;
+	}
+
+	sendtime = SECONDS_TO_2000 + sendtime_x;
 	gmtime_r(&sendtime, &tm_sendtime);
 
-	struct CDBAttrHeader* cdbattr = malloc(st->fsize);
+	cdbattr = malloc(st->fsize);
 	if (!cdbattr)
 	{
 		printf("%s: malloc failed (%u)\n", path, st->fsize);
-		return;
+		return -ENOMEM;
 	}
+	cdbfile = cdbattr->cdbfile;
 
 	res = f_open(fp, path, FA_READ);
 	if (res != FR_OK)
 	{
 		printf("%s: f_open() failed (%i)\n", path, res);
-		return;
+		goto finish;
 	}
 
 	UINT read;
@@ -121,11 +133,10 @@ static void export_cb(const char* path, FILINFO* st)
 	f_close(fp);
 	if (read != st->fsize) // imagine xor
 	{
-		printf("%s: short read (%u/%u)\n", path, read, st->fsize);
-		return;
+		printf("%s: short read (%i : %u/%u)\n", path, res, read, st->fsize);
+		goto finish;
 	}
 
-	char outpath[PATH_MAX];
 	char timestr[30];
 	char datetimestr[60];
 	static const char mon[12][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
@@ -135,68 +146,76 @@ static void export_cb(const char* path, FILINFO* st)
 	sprintf(outpath, "%s:/cdb/%i/%s/%02i/%s %s.txt", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon],
 			tm_sendtime.tm_mday, timestr, cdbattr->description);
 
-	clearln();
-	printf("Processing: %s %s", datetimestr, cdbattr->description);
+	printf("%s %s from %s\n", datetimestr, cdbattr->description, cdbfile->sender);
 
-	do
+	char* ptr = strchr(outpath, '/') + 1;
+
+	while ((ptr = strchr(ptr, '/')))
 	{
-		FILE* text = NULL;
-		char* ptr = strchr(outpath, '/') + 1;
+		ptr[0] = 0;
+		if (mkdir(outpath, 0644) < 0 && errno != EEXIST) goto error;
+		ptr[0] = '/';
+		ptr++;
+	}
 
-		while ((ptr = strchr(ptr, '/')))
+	text = fopen(outpath, "wb");
+	if (!text) goto error;;
+	static uint16_t bom[] = { 0xFEFF }, newlines[] = { '\n', '\n' };
+	fwrite(bom, 1, sizeof(bom), text);
+
+	uint16_t* start;
+	unsigned count;
+	for (start = (void*)cdbfile + cdbfile->desc_offset, count = 0;
+		 start[count] != 0x0000;
+		 count++);
+
+	if (!fwrite(start, sizeof(uint16_t), count, text)) goto error;
+
+	if (!fwrite(newlines, sizeof(newlines), 1, text)) goto error;
+
+	for (start = (void*)cdbfile + cdbfile->body_offset, count = 0;
+		 start[count] != 0x0000;
+		 count++);
+
+	if (!fwrite(start, sizeof(uint16_t), count, text)) goto error;
+
+	fclose(text);
+
+	if (cdbfile->attachment_offset)
+	{
+		const char* ext;
+		uint32_t attachment_magic = (*(uint32_t*)((void*)cdbfile + cdbfile->attachment_offset));
+		switch (attachment_magic)
 		{
-			ptr[0] = 0;
-			if (mkdir(outpath, 0644) < 0 && errno != EEXIST) goto perror_and_break;
-			ptr[0] = '/';
-			ptr++;
+			case 0x55AA382D: ext = "U8";	break;
+			case 0x30335F30: ext = "ptm";	break;
+			case 0x414A5047: ext = "ajpg";	break;
+
+			default: ext = "bin"; break;
 		}
 
+		sprintf(strrchr(outpath, '.'), "-attachment.%s", ext);
 		text = fopen(outpath, "wb");
-		if (!text) goto perror_and_break;
+		if (!text) goto error;
 
-		static uint16_t bom[] = { 0xFEFF }, newlines[] = { '\n', '\n' };
-
-		fwrite(bom, 1, sizeof(bom), text);
-
-		uint16_t* start;
-		unsigned count;
-		for (start = ((void*)cdbattr->cdbfile) + cdbattr->cdbfile->desc_offset, count = 0;
-			 start[count] != 0x0000;
-			 count++);
-
-		if (!fwrite(start, sizeof(uint16_t), count, text)) goto perror_and_break;
-
-		if (!fwrite(newlines, sizeof(newlines), 1, text)) goto perror_and_break;
-
-		for (start = ((void*)cdbattr->cdbfile) + cdbattr->cdbfile->body_offset, count = 0;
-			 start[count] != 0x0000;
-			 count++);
-
-		if (!fwrite(start, sizeof(uint16_t), count, text)) goto perror_and_break;
-
+		if (!fwrite((void*)cdbfile + cdbfile->attachment_offset, cdbfile->attachment_size, 1, text)) goto error;
 		fclose(text);
-/*
-		if (cdbattr->cdbfile->attachment_offset)
-		{
-			sprintf(strrchr(outpath, '.'), "-attachment.bin");
-			text = fopen(outpath, "wb");
-			if (!text) goto perror_and_break;
+	}
 
-			fwrite(((void*)cdbattr->cdbfile) + cdbattr->cdbfile->attachment_offset, cdbattr->cdbfile->attachment_size, 1, text);
-			fclose(text);
-		}
-*/
-		break;
+	goto finish;
 
-perror_and_break:
-		perror(outpath);
-		if (text) fclose(text);
-	} while (0);
 
+error:
+	res = -errno;
+	perror(outpath);
+
+finish:
 	free(cdbattr);
+	if (text) fclose(text);
+	return res;
 }
 
-static int copytree(const char* src, void(*callback)(const char*, FILINFO*))
+static int copytree(const char* src, int (*callback)(const char*, FILINFO*))
 {
 	char path[256];
 
@@ -291,7 +310,7 @@ int main() {
 	PAD_Init();
 	ISFS_Initialize();
 
-	if (IosPatch_RUNTIME(nand_permissions, false) < 0)
+	if (!patch_isfs_permissions())
 	{
 		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
 		sleep(2);
