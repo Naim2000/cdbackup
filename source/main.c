@@ -146,7 +146,7 @@ static int export_cb(const char* path, FILINFO* st)
 	sprintf(outpath, "%s:/cdb/%i/%s/%02i/%s %s.txt", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon],
 			tm_sendtime.tm_mday, timestr, cdbattr->description);
 
-	printf("%s %s from %s\n", datetimestr, cdbattr->description, cdbfile->sender);
+	printf("Processing: %s %s\n", datetimestr, cdbattr->description);
 
 	char* ptr = strchr(outpath, '/') + 1;
 
