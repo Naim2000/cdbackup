@@ -2,6 +2,28 @@
  * Observations from giantpune's mailboxbomb code.
  */
 
+#define SECONDS_TO_2000		946684800ULL
+
+struct CDBFILE
+{
+	/* 0x000 */ char magic[4]; // 0x52495f35 'RI_5'
+	/* 0x004 */ float pos_x, pos_y; // are these floats?
+	/* 0x00c */ uint32_t type;
+	/* 0x010 */ uint64_t send_time; // in ticks!?
+	/* 0x018 */ char sender[0x100]; // ?
+	/* 0x118 */ uint32_t type2;
+	/* 0x11C */ uint32_t desc_offset;
+	/* 0x120 */ uint32_t body_offset;
+	/* 0x124 */ uint32_t unk1;
+	/* 0x128 */ uint32_t attachment_type;
+	/* 0x12C */ uint32_t attachment_offset;
+	/* 0x130 */ uint32_t attachment_size;
+	/* 0x134 */ uint32_t unk3;
+	/* 0x138 */ uint32_t unk4;
+	/* 0x13c */ uint32_t unk5;
+	/* 0x140 */ uint32_t crc32; // CRC32 of this entire header (0x140 bytes)
+};
+
 struct CDBAttrHeader
 {
 	/* 0x00 */ char magic[7];	// "CDBFILE"
@@ -33,8 +55,11 @@ struct CDBAttrHeader
 	/* 0x80 */ char keystring[0x20];	// ? {1}
 	/* 0xA0 */ unsigned char iv[16];	// {1} {2}
 	/* 0xB0 */ unsigned char sha1_hmac[20];
+	/* 0xC4 */ unsigned char padding[0x400 - 0xC4]; // or unknown. just using it as filler space
 
+	/* 0x400 */ struct CDBFILE cdbfile[];
 };
+_Static_assert(sizeof(struct CDBAttrHeader) == 0x400, "Fix the padding");
 
 /*
  * {1}: "Messages stored on the SD card (as opposed to the Wii's NAND) are signed and encrypted. These values are only present in encrypted messages."
@@ -42,22 +67,4 @@ struct CDBAttrHeader
  * {2}: The key is all zeroes it seems.
  */
 
-struct CDBFILE
-{
-	/* 0x000 */ char magic[4]; // 0x52495f35 'RI_5'
-	/* 0x004 */ float pos_x, pos_y; // are these floats?
-	/* 0x00c */ uint32_t type;
-	/* 0x010 */ uint64_t send_time; // in ticks!?
-	/* 0x018 */ char sender[0x100] // ?
-	/* 0x118 */ uint32_t type2;
-	/* 0x11C */ uint32_t desc_offset;
-	/* 0x120 */ uint32_t body_offset;
-	/* 0x124 */ uint32_t unk1;
-	/* 0x128 */ uint32_t attachment_type;
-	/* 0x12C */ uint32_t attachment_offset;
-	/* 0x130 */ uint32_t attachment_size;
-	/* 0x134 */ uint32_t unk3;
-	/* 0x138 */ uint32_t unk4;
-	/* 0x13c */ uint32_t unk5;
-	/* 0x140 */ uint32_t crc32; // CRC32 of this entire header (0x140 bytes)
-}
+

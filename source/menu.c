@@ -11,7 +11,7 @@ void DrawHeading(void)
 
     // Draw a nice heading.
     puts("cdbackup " VERSION ", by thepikachugamer");
-    puts("Backup/restore/modify(?) your Wii Message Board data.");
+    puts("Backup/restore/export your Wii Message Board data.");
     for (int i = 0; i < conX; i++) putchar(0xcd); // backup ahaha funny
 }
 
@@ -49,6 +49,8 @@ int MainMenu(int argc; MainMenuItem argv[argc], int argc)
 
             if (input_pressed(a))
             {
+                if (!item->action) return 0;
+
                 clear();
                 DrawHeading();
                 item->action();

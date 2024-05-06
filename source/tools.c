@@ -46,12 +46,14 @@ void clearln() {
 void quit(int ret) {
 	FATUnmount();
 	ISFS_Deinitialize();
+
 	printf("\nPress HOME/START to return to loader.");
 	input_scan();
 	while(!input_pressed(home)) {
 		input_scan();
 		VIDEO_WaitVSync();
 	}
+
 	WPAD_Shutdown();
 	exit(ret);
 }

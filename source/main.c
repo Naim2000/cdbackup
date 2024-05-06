@@ -1,10 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <time.h>
 #include <assert.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <ogc/machine/processor.h>
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include <ogc/isfs.h>
@@ -18,6 +20,7 @@
 #include "menu.h"
 #include "fs.h"
 #include "vff.h"
+#include "cdbfile.h"
 
 int backup() {
 	char filepath[PATH_MAX];
@@ -85,16 +88,121 @@ int delete() {
 	return ret;
 }
 
-static int copytree(const char* src, const char* dst)
+static void export_cb(const char* path, FILINFO* st)
 {
-	char path[256], pathB[256];
-	unsigned char buffer[0x200];
+	FIL fp[1];
+	int res;
+
+	if (!strcmp(st->fname, "cdb.conf")) return;
+
+	uint32_t sendtime_x = 0;
+	time_t sendtime = 0;
+	struct tm tm_sendtime = {};
+	sscanf(st->fname, "%X.000", &sendtime_x);
+	sendtime = sendtime_x + SECONDS_TO_2000;
+	gmtime_r(&sendtime, &tm_sendtime);
+
+	struct CDBAttrHeader* cdbattr = malloc(st->fsize);
+	if (!cdbattr)
+	{
+		printf("%s: malloc failed (%u)\n", path, st->fsize);
+		return;
+	}
+
+	res = f_open(fp, path, FA_READ);
+	if (res != FR_OK)
+	{
+		printf("%s: f_open() failed (%i)\n", path, res);
+		return;
+	}
+
+	UINT read;
+	res = f_read(fp, cdbattr, st->fsize, &read);
+	f_close(fp);
+	if (read != st->fsize) // imagine xor
+	{
+		printf("%s: short read (%u/%u)\n", path, read, st->fsize);
+		return;
+	}
+
+	char outpath[PATH_MAX];
+	char timestr[30];
+	char datetimestr[60];
+	static const char mon[12][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+
+	strftime(datetimestr, sizeof(datetimestr), "%F %r", &tm_sendtime);
+	strftime(timestr, sizeof(timestr), "%p %I.%M.%S", &tm_sendtime);
+	sprintf(outpath, "%s:/cdb/%i/%s/%02i/%s %s.txt", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon],
+			tm_sendtime.tm_mday, timestr, cdbattr->description);
+
+	clearln();
+	printf("Processing: %s %s", datetimestr, cdbattr->description);
+
+	do
+	{
+		FILE* text = NULL;
+		char* ptr = strchr(outpath, '/') + 1;
+
+		while ((ptr = strchr(ptr, '/')))
+		{
+			ptr[0] = 0;
+			if (mkdir(outpath, 0644) < 0 && errno != EEXIST) goto perror_and_break;
+			ptr[0] = '/';
+			ptr++;
+		}
+
+		text = fopen(outpath, "wb");
+		if (!text) goto perror_and_break;
+
+		static uint16_t bom[] = { 0xFEFF }, newlines[] = { '\n', '\n' };
+
+		fwrite(bom, 1, sizeof(bom), text);
+
+		uint16_t* start;
+		unsigned count;
+		for (start = ((void*)cdbattr->cdbfile) + cdbattr->cdbfile->desc_offset, count = 0;
+			 start[count] != 0x0000;
+			 count++);
+
+		if (!fwrite(start, sizeof(uint16_t), count, text)) goto perror_and_break;
+
+		if (!fwrite(newlines, sizeof(newlines), 1, text)) goto perror_and_break;
+
+		for (start = ((void*)cdbattr->cdbfile) + cdbattr->cdbfile->body_offset, count = 0;
+			 start[count] != 0x0000;
+			 count++);
+
+		if (!fwrite(start, sizeof(uint16_t), count, text)) goto perror_and_break;
+
+		fclose(text);
+/*
+		if (cdbattr->cdbfile->attachment_offset)
+		{
+			sprintf(strrchr(outpath, '.'), "-attachment.bin");
+			text = fopen(outpath, "wb");
+			if (!text) goto perror_and_break;
+
+			fwrite(((void*)cdbattr->cdbfile) + cdbattr->cdbfile->attachment_offset, cdbattr->cdbfile->attachment_size, 1, text);
+			fclose(text);
+		}
+*/
+		break;
+
+perror_and_break:
+		perror(outpath);
+		if (text) fclose(text);
+	} while (0);
+
+	free(cdbattr);
+}
+
+static int copytree(const char* src, void(*callback)(const char*, FILINFO*))
+{
+	char path[256];
 
 	FRESULT fres;
 	DIR dp[1] = {};
 	FILINFO st;
-
-	puts(src);
 
 	fres = f_opendir(dp, src);
 	if (fres != FR_OK) {
@@ -102,56 +210,15 @@ static int copytree(const char* src, const char* dst)
 		return fres;
 	}
 
-	mkdir(dst, 0644);
-
 	while ( ((fres = f_readdir(dp, &st)) == FR_OK) && st.fname[0] )
 	{
-		sprintf(path,  "%s/%s", src, st.fname);
-		sprintf(pathB, "%s/%s", dst, st.fname);
+		sprintf(path, "%s/%s", src, st.fname);
 
 		if (st.fattrib & AM_DIR)
-		{
-			copytree(path, pathB);
-		}
+			copytree(path, callback);
+
 		else
-		{
-			FIL fp[1];
-
-			puts(path);
-
-			fres = f_open(fp, path, FA_READ);
-			if (fres != FR_OK)
-			{
-				printf("%s: f_open() failed (%i)\n", path, fres);
-				break;
-			}
-
-			FILE* fp_B = fopen(pathB, "wb");
-			if (!fp_B)
-			{
-				perror(pathB);
-				f_close(fp);
-				break;
-			}
-
-			UINT read, left = st.fsize;
-			while ( ((fres = f_read(fp, buffer, sizeof(buffer), &read)) == FR_OK) && read)
-			{
-				if (!fwrite(buffer, read, 1, fp_B))
-				{
-					perror(pathB);
-					break;
-				}
-				left -= read;
-			}
-
-			f_close(fp);
-			fclose(fp_B);
-
-			if (left) {
-				break;
-			}
-		}
+			callback(path, &st);
 	}
 
 	f_closedir(dp);
@@ -159,7 +226,7 @@ static int copytree(const char* src, const char* dst)
 	return fres;
 }
 
-int extract(void)
+int export(void)
 {
 	FATFS fs = {};
 
@@ -177,19 +244,14 @@ int extract(void)
 	if (ret < 0)
 		return ret;
 
-	sprintf(filepath, "%s:/cdb", GetActiveDeviceName());
-	ret = copytree("vff:", filepath);
-	printf("OK!\n");
+	ret = copytree("vff:", export_cb);
+	puts("\nOK!");
 
 	f_unmount("vff:");
+	fclose(fp);
 	return ret;
 }
 
-int remount(void)
-{
-	FATUnmount();
-	return (int)FATMount();
-}
 
 static MainMenuItem items[5] =
 {
@@ -212,16 +274,16 @@ static MainMenuItem items[5] =
 	},
 
 	{
-		"Extract",
-		"\x1b[34;1m", // light blue
-		extract
+		"Export (text)",
+		"\x1b[33;1m", // light yellow
+		export
 	},
 
 	{
-		"Switch device",
-		"\x1b[33;1m", // light yellow
-		remount
-	},
+		"Exit",
+		"",
+		NULL
+	}
 };
 
 int main() {
@@ -229,12 +291,18 @@ int main() {
 	PAD_Init();
 	ISFS_Initialize();
 
+	if (IosPatch_RUNTIME(nand_permissions, false) < 0)
+	{
+		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
+		sleep(2);
+	}
+
+
 	if (!FATMount())
 		quit(-ENODEV);
 
-	if (IosPatch_RUNTIME(nand_permissions, false) < 0)
-		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
-
 	quit(MainMenu(items, 5));
+
+
 	return 0;
 }
