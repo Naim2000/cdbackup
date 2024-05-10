@@ -306,11 +306,12 @@ static MainMenuItem items[5] =
 };
 
 int main() {
+	bool ok = (patch_ahbprot_reset() && patch_isfs_permissions());
 	WPAD_Init();
 	PAD_Init();
 	ISFS_Initialize();
 
-	if (!patch_isfs_permissions())
+	if (!ok)
 	{
 		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
 		sleep(2);
