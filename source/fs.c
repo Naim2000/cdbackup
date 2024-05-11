@@ -24,7 +24,7 @@ int progressbar(size_t read, size_t total, void* userp) {
 		putchar(' ');
 	}
 
-	printf("\x1b[40m] %u / %u bytes (%.2f%%) ", read, total, (read / (float)total) * 100);
+	printf("\x1b[40m] %u / %u bytes (%i%%) ", read, total, (read * 100 / total));
 	if (read == total)
 		putchar('\n');
 

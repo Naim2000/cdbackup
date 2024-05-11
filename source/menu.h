@@ -6,4 +6,4 @@ typedef const struct
 } MainMenuItem;
 
 void DrawHeading(void);
-int MainMenu(int argc; MainMenuItem argv[argc], int argc);
+void MainMenu(int argc; MainMenuItem argv[argc], int argc);

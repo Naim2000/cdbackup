@@ -6,7 +6,8 @@
 #include <ogc/usbstorage.h>
 
 #include "fatMounter.h"
-#include "tools.h"
+#include "pad.h"
+#include "video.h"
 
 // Inspired by YAWM ModMii Edition
 typedef struct {
@@ -55,13 +56,24 @@ bool FATMount() {
 			clearln();
 			printf("[*]	Device: < %s >", attached[index]->friendlyName);
 
-			while (true) {
-				input_scan();
+			switch(wait_button(0))
+			{
+				case WPAD_BUTTON_LEFT:
+					if (index) index -= 1;
+					break;
 
-				if 		(input_pressed(left))		{ if (index) index--; break; }
-				else if (input_pressed(right))	{ if (++index == i) index = 0; break; }
-				else if (input_pressed(a))		{ target = attached[index]; selected = true; break; }
-				else if (input_pressed(home))		{ selected = true; break; }
+				case WPAD_BUTTON_RIGHT:
+					if (++index == i) index = 0;
+					break;
+
+				case WPAD_BUTTON_A:
+					target = attached[index];
+				case WPAD_BUTTON_B:
+				case WPAD_BUTTON_HOME:
+					selected = true;
+					break;
+
+
 			}
 		}
 		clearln();

@@ -1,12 +1,9 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <math.h>
-#include <time.h>
-#include <assert.h>
+#include <unistd.h>
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include <ogc/machine/processor.h>
 #include <gccore.h>
 #include <wiiuse/wpad.h>
 #include <ogc/isfs.h>
@@ -15,12 +12,30 @@
 
 #include "config.h"
 
+#include "pad.h"
+#include "video.h"
 #include "fatMounter.h"
-#include "tools.h"
 #include "menu.h"
 #include "fs.h"
 #include "vff.h"
 #include "cdbfile.h"
+
+__attribute__((weak))
+void OSReport(const char*, ...) {};
+
+bool confirmation(const char* message, unsigned int wait_time) {
+	puts(message);
+	while (wait_time) {
+		printf("\x1b[30;1m%u...\x1b[39m\r", wait_time--);
+		sleep(1);
+	}
+
+	puts("Press +/START to confirm.\n"
+		 "Press any other button to cancel.\n");
+
+	return (bool)(wait_button(0) & WPAD_BUTTON_PLUS);
+}
+
 
 int backup() {
 	char filepath[PATH_MAX];
@@ -77,13 +92,24 @@ int delete() {
 
 	printf (">> Deleting %s from NAND... ", NAND_TARGET);
 	ret = ISFS_Delete(NAND_TARGET);
-	if (ret == -106) {
-		puts("You already deleted it.");
-		return 0;
-	}
+	switch (ret) {
+		case 0:
+			puts("OK!");
+			break;
 
-	else if (ret < 0) printf("Error! (%d)", ret);
-	else printf("OK!\n");
+		case -102:
+			puts("\nTold you this was gonna happen... (Permission denied.)");
+			break;
+
+		case -106:
+			puts("You already deleted it.");
+			ret = 0;
+			break;
+
+		default:
+			printf("Error! (%i)\n", ret);
+			break;
+	}
 
 	return ret;
 }
@@ -217,7 +243,7 @@ finish:
 
 static int copytree(const char* src, int (*callback)(const char*, FILINFO*))
 {
-	char path[256];
+	char path[PATH_MAX];
 
 	FRESULT fres;
 	DIR dp[1] = {};
@@ -307,22 +333,27 @@ static MainMenuItem items[5] =
 
 int main() {
 	bool ok = (patch_ahbprot_reset() && patch_isfs_permissions());
-	WPAD_Init();
-	PAD_Init();
+	initpads();
 	ISFS_Initialize();
 
 	if (!ok)
 	{
-		printf("Failed to patch NAND permissions, deleting is not going to work...\n\n");
-		sleep(2);
+		puts("Failed to patch NAND permissions, deleting is not going to work...");
+		sleep(3);
 	}
 
 
 	if (!FATMount())
-		quit(-ENODEV);
+		goto quit;
 
-	quit(MainMenu(items, 5));
+	MainMenu(items, 5);
 
+quit:
+	FATUnmount();
+	ISFS_Deinitialize();
 
+	printf("\nPress HOME/START to return to loader.");
+	while(!wait_button(WPAD_BUTTON_HOME));
+	stoppads();
 	return 0;
 }
