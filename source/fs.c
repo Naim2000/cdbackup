@@ -38,7 +38,7 @@ int NAND_GetFileSize(const char* filepath, size_t* size) {
 	if (size)
 		*size = 0;
 
-	int fd = ISFS_Open(filepath, 0);
+	int fd = ISFS_Open(filepath, ISFS_OPEN_READ);
 	if (fd < 0)
 		return fd;
 
