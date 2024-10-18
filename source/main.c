@@ -116,6 +116,69 @@ int delete() {
 	return ret;
 }
 
+static int extract_cb(const char* path, FILINFO* st)
+{
+	char outpath[PATH_MAX];
+	unsigned char buffer[0x10000];
+	FIL fp[1] = {};
+	FILE* out = NULL;
+	int res;
+
+	const char* ptr_path = strchr(path, ':');
+	if (!ptr_path++) ptr_path = path;
+
+	sprintf(outpath, "%s:%s%s", GetActiveDeviceName(), EXTRACT_PATH, ptr_path);
+	puts(outpath);
+
+	char* ptr = outpath;
+	while ((ptr = strchr(ptr, '/')))
+	{
+		*ptr = 0;
+		int ret = mkdir(outpath, 0644);
+
+		if (ret < 0 && errno != EEXIST)
+			goto error;
+
+		*ptr++ = '/';
+	}
+
+	res = f_open(fp, path, FA_READ);
+	if (res != FR_OK)
+	{
+		printf("%s: f_open() failed (%i)\n", path, res);
+		return res;
+	}
+
+	out = fopen(outpath, "wb");
+	if (!out)
+	{
+		f_close(fp);
+		perror(outpath);
+		return -errno;
+	}
+
+	UINT read = 0;
+	while (true)
+	{
+		res = f_read(fp, buffer, sizeof buffer, &read);
+		if (res || !read)
+			break;
+
+		if (!fwrite(buffer, read, 1, out)) {
+			res = -errno;
+			break;
+		}
+	}
+
+	f_close(fp);
+	fclose(out);
+	return res;
+
+error:
+	perror(outpath);
+	return -errno;
+}
+
 static int export_cb(const char* path, FILINFO* st)
 {
 	int res;
@@ -290,6 +353,32 @@ static int copytree(const char* src, int (*callback)(const char*, FILINFO*))
 	return fres;
 }
 
+int extract(void)
+{
+	FATFS fs = {};
+
+	char filepath[PATH_MAX];
+	sprintf(filepath, "%s:%s", GetActiveDeviceName(), FAT_TARGET);
+	FILE* fp = fopen(filepath, "rb");
+	if (!fp) {
+		perror(filepath);
+		return -errno;
+	}
+
+	f_mount(&fs, "vff:", 0);
+
+	int ret = VFFInit(fp, &fs);
+	if (ret < 0)
+		return ret;
+
+	ret = copytree("vff:", extract_cb);
+	if (!ret) puts("\nOK!");
+
+	f_unmount("vff:");
+	fclose(fp);
+	return ret;
+}
+
 int export(void)
 {
 	FATFS fs = {};
@@ -309,7 +398,7 @@ int export(void)
 		return ret;
 
 	ret = copytree("vff:", export_cb);
-	puts("\nOK!");
+	if (!ret) puts("\nOK!");
 
 	f_unmount("vff:");
 	fclose(fp);
@@ -317,7 +406,7 @@ int export(void)
 }
 
 
-static MainMenuItem items[5] =
+static MainMenuItem items[] =
 {
 	{
 		"Backup",
@@ -335,6 +424,12 @@ static MainMenuItem items[5] =
 		"Delete",
 		"\x1b[41;1m\x1b[30m", // Black on light red
 		delete
+	},
+
+	{
+		"Extract (raw)",
+		"\x1b[33;0m",
+		extract
 	},
 
 	{
@@ -365,7 +460,7 @@ int main() {
 	if (!FATMount())
 		goto waitexit;
 
-	MainMenu(items, 5);
+	MainMenu(items, 6);
 
 exit:
 	FATUnmount();
