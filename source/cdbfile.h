@@ -10,11 +10,12 @@ struct CDBFILE
 	/* 0x004 */ float pos_x, pos_y; // are these floats?
 	/* 0x00c */ uint32_t type;
 	/* 0x010 */ uint64_t send_time; // in ticks!?
-	/* 0x018 */ char sender[0x100]; // ?
+	/* 0x018 */ uint64_t sender;
+	/* 0x020 */ char unk1[0xF8];
 	/* 0x118 */ uint32_t type2;
 	/* 0x11C */ uint32_t desc_offset;
 	/* 0x120 */ uint32_t body_offset;
-	/* 0x124 */ uint32_t unk1;
+	/* 0x124 */ uint32_t unk2;
 	/* 0x128 */ uint32_t attachment_type;
 	/* 0x12C */ uint32_t attachment_offset;
 	/* 0x130 */ uint32_t attachment_size;

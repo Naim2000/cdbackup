@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -19,6 +20,7 @@
 #include "fs.h"
 #include "vff.h"
 #include "cdbfile.h"
+#include "converter/converter.h"
 
 __attribute__((weak))
 void OSReport(const char*, ...) {};
@@ -119,8 +121,9 @@ static int export_cb(const char* path, FILINFO* st)
 	int res;
 
 	uint32_t sendtime_x = 0;
-	time_t sendtime;
+	time_t sendtime, edittime;
 	struct tm tm_sendtime = {};
+	struct tm tm_edittime = {};
 
 	FIL fp[1];
 	struct CDBAttrHeader* cdbattr = NULL;
@@ -163,48 +166,64 @@ static int export_cb(const char* path, FILINFO* st)
 		goto finish;
 	}
 
-	char timestr[30];
-	char datetimestr[60];
-	static const char mon[12][4] = { "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec" };
+	char pathstr[60], timestr[60], editstr[60], datetimestr[60];
 
-	strftime(datetimestr, sizeof(datetimestr), "%F %r", &tm_sendtime);
-	strftime(timestr, sizeof(timestr), "%p %I.%M.%S", &tm_sendtime);
-	sprintf(outpath, "%s:/cdb/%i/%s/%02i/%s %s.txt", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon],
-			tm_sendtime.tm_mday, timestr, cdbattr->description);
+	edittime = SECONDS_TO_2000 + cdbattr->last_edit_time;
+	gmtime_r(&edittime, &tm_edittime);
+	strftime(datetimestr, sizeof(datetimestr), "%c", &tm_sendtime);
+	strftime(editstr, sizeof(editstr), "%c", &tm_edittime);
+	strftime(timestr, sizeof(timestr), "%F %r", &tm_sendtime);
+	strftime(pathstr, sizeof(pathstr), "%Y/%m %b/%d/%H∶%M∶%S", &tm_sendtime);
+	sprintf(outpath, "%s:%s/%s %s.txt", GetActiveDeviceName(), EXPORT_PATH, pathstr, cdbattr->description);
 
-	printf("Processing: %s %s\n", datetimestr, cdbattr->description);
+	printf("Processing: %s %s\n", timestr, cdbattr->description);
 
-	char* ptr = strchr(outpath, '/') + 1;
-
+	char* ptr = outpath;
 	while ((ptr = strchr(ptr, '/')))
 	{
-		ptr[0] = 0;
-		if (mkdir(outpath, 0644) < 0 && errno != EEXIST) goto error;
-		ptr[0] = '/';
-		ptr++;
+		*ptr = 0;
+		int ret = mkdir(outpath, 0644);
+
+		if (ret < 0 && errno != EEXIST)
+			goto error;
+
+		*ptr++ = '/';
 	}
 
-	text = fopen(outpath, "wb");
-	if (!text) goto error;;
-	static uint16_t bom[] = { 0xFEFF }, newlines[] = { '\n', '\n' };
-	fwrite(bom, 1, sizeof(bom), text);
+	text = fopen(outpath, "w");
+	if (!text) goto error;
 
-	uint16_t* start;
-	unsigned count;
-	for (start = (void*)cdbfile + cdbfile->desc_offset, count = 0;
-		 start[count] != 0x0000;
-		 count++);
+	utf16_t* ptr_desc = (void*)cdbfile + cdbfile->desc_offset;
+	utf16_t* ptr_body = (void*)cdbfile + cdbfile->body_offset;
+	size_t len_desc   = 0;
+	size_t len_body   = 0;
+	size_t len_desc8  = 0;
+	size_t len_body8  = 0;
 
-	if (!fwrite(start, sizeof(uint16_t), count, text)) goto error;
+	while (ptr_desc[len_desc++]);
+	while (ptr_body[len_body++]);
 
-	if (!fwrite(newlines, sizeof(newlines), 1, text)) goto error;
+	len_desc8 = utf16_to_utf8(ptr_desc, len_desc, 0, 0);
+	len_body8 = utf16_to_utf8(ptr_body, len_body, 0, 0);
 
-	for (start = (void*)cdbfile + cdbfile->body_offset, count = 0;
-		 start[count] != 0x0000;
-		 count++);
+	utf8_t* txt_buffer = malloc(len_body8 > len_desc8 ? len_body8 : len_desc8);
+	if (!txt_buffer) {
+		// Why are we still here
+		fclose(text);
+		goto error;
+	}
 
-	if (!fwrite(start, sizeof(uint16_t), count, text)) goto error;
+	utf16_to_utf8(ptr_desc, len_desc, txt_buffer, len_desc8);
+	fprintf(text, "Message title:  %s\n"
+				  "Sender:         %016lld\n"
+				  "Send date:      %s\n"
+				  "Last edit date: %s\n"
+				  "==================\n", (char*)txt_buffer, cdbfile->sender, datetimestr, editstr);
 
+	utf16_to_utf8(ptr_body, len_body, txt_buffer, len_body8);
+	fputs((char*)txt_buffer, text);
+
+	free(txt_buffer);
 	fclose(text);
 
 	if (cdbfile->attachment_offset)
@@ -213,9 +232,9 @@ static int export_cb(const char* path, FILINFO* st)
 		uint32_t attachment_magic = (*(uint32_t*)((void*)cdbfile + cdbfile->attachment_offset));
 		switch (attachment_magic)
 		{
-			case 0x55AA382D: ext = "U8";	break;
-			case 0x30335F30: ext = "ptm";	break;
-			case 0x414A5047: ext = "ajpg";	break;
+			case 0x55AA382D: ext = "arc"; break;
+			case 0x30335F30: ext = "ptm"; break;
+			case 0x414A5047: ext = "ajpg"; break;
 
 			default: ext = "bin"; break;
 		}
@@ -344,16 +363,19 @@ int main() {
 
 
 	if (!FATMount())
-		goto quit;
+		goto waitexit;
 
 	MainMenu(items, 5);
 
-quit:
+exit:
 	FATUnmount();
 	ISFS_Deinitialize();
 
-	printf("\nPress HOME/START to return to loader.");
-	while(!wait_button(WPAD_BUTTON_HOME));
 	stoppads();
 	return 0;
+
+waitexit:
+	printf("\nPress any button to return to loader.");
+	while(!wait_button(0));
+	goto exit;
 }
