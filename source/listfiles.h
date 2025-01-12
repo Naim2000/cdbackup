@@ -1,0 +1,1 @@
+void listFiles(const char *path);
