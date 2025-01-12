@@ -9,61 +9,56 @@
 #include "video.h"
 #include "malloc.h"
 
-static void* xfb = NULL;
+static void *xfb = NULL;
 static GXRModeObj vmode = {};
 static int conX, conY;
 
+static GXRModeObj *rmode = NULL;
+
 // from LoadPriiloader
-__attribute__((constructor))
-void init_video() {
+__attribute__((constructor)) void init_video()
+{
+	// Initialise the video system
 	VIDEO_Init();
 
-	// setup view size
-	VIDEO_GetPreferredMode(&vmode);
-	vmode.viWidth = 672;
+	// Obtain the preferred video mode from the system
+	// This will correspond to the settings in the Wii menu
+	rmode = VIDEO_GetPreferredMode(NULL);
 
-	// set correct middlepoint of the screen
-    if ((vmode.viTVMode >> 2) == VI_PAL) {
-		vmode.viXOrigin = (VI_MAX_WIDTH_PAL - vmode.viWidth) / 2;
-		vmode.viYOrigin = (VI_MAX_HEIGHT_PAL - vmode.viHeight) / 2;
-	}
-	else {
-		vmode.viXOrigin = (VI_MAX_WIDTH_NTSC - vmode.viWidth) / 2;
-		vmode.viYOrigin = (VI_MAX_HEIGHT_NTSC - vmode.viHeight) / 2;
-	}
+	// Allocate memory for the display in the uncached region
+	xfb = MEM_K0_TO_K1(SYS_AllocateFramebuffer(rmode));
 
-	size_t fbSize = VIDEO_GetFrameBufferSize(&vmode) + 0x100;
-	xfb = memalign32(fbSize);
-	DCInvalidateRange(xfb, fbSize);
-	xfb = (void*)((uintptr_t)xfb | SYS_BASE_UNCACHED);
+	// Initialise the console, required for printf
+	console_init(xfb, 20, 20, rmode->fbWidth, rmode->xfbHeight, rmode->fbWidth * VI_DISPLAY_PIX_SZ);
+	// SYS_STDIO_Report(true);
 
-	VIDEO_SetBlack(true);
-	VIDEO_Configure(&vmode);
-	VIDEO_Flush();
-	VIDEO_WaitVSync();
+	// Set up the video registers with the chosen mode
+	VIDEO_Configure(rmode);
 
-	// Initialise the console
-	CON_InitEx(&vmode, (vmode.viWidth + vmode.viXOrigin - CONSOLE_WIDTH) / 2,
-					   (vmode.viHeight + vmode.viYOrigin - CONSOLE_HEIGHT) / 2,
-					   CONSOLE_WIDTH, CONSOLE_HEIGHT);
-	CON_GetMetrics(&conX, &conY);
-
-	VIDEO_ClearFrameBuffer(&vmode, xfb, COLOR_BLACK);
+	// Tell the video hardware where our display memory is
 	VIDEO_SetNextFramebuffer(xfb);
+
+	// Make the display visible
 	VIDEO_SetBlack(false);
+
+	// Flush the video register changes to the hardware
 	VIDEO_Flush();
+
+	// Wait for Video setup to complete
 	VIDEO_WaitVSync();
-	if (vmode.viTVMode & VI_NON_INTERLACE)
+	if (rmode->viTVMode & VI_NON_INTERLACE)
 		VIDEO_WaitVSync();
 }
 
-void clear() {
+void clear()
+{
 	VIDEO_WaitVSync();
-//	VIDEO_ClearFrameBuffer(&vmode, xfb, COLOR_BLACK);
+	//	VIDEO_ClearFrameBuffer(&vmode, xfb, COLOR_BLACK);
 	printf("%s", "\x1b[2J");
 }
 
-void clearln() {
+void clearln()
+{
 	putchar('\r');
 	for (int i = 1; i < conX; i++)
 		putchar(' ');
