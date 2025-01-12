@@ -12,8 +12,8 @@
 #include <ogc/isfs.h>
 #include "libpatcher.h"
 #include <fat.h>
+#include "list.h"
 #include "odh.h"
-#include "dirent.h"
 #include "aes.h"
 #include <setjmp.h>
 
@@ -195,47 +195,6 @@ static int extract_cb(const char *path, FILINFO *st)
 error:
 	perror(outpath);
 	return -errno;
-}
-
-#define MAX_PATH_LENGTH 256
-
-void listFiles(const char *path)
-{
-	DIR *dir = opendir(path);
-	if (dir == NULL)
-	{
-		printf("Failed to open directory: %s\n", path);
-		return;
-	}
-
-	struct dirent *entry;
-	while ((entry = readdir(dir)) != NULL)
-	{
-		printf("%s", entry->d_name);
-
-		// Skip "." and ".."
-		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-		{
-			continue;
-		}
-
-		char full_path[256];
-		snprintf(full_path, sizeof(full_path), "%s/%s", path, entry->d_name);
-
-		if (entry->d_type == DT_DIR1)
-		{
-			// It's a directory, recurse into it
-			listFiles(full_path);
-		}
-		else if (entry->d_type == DT_REG)
-		{
-			// It's a file, process it
-			printf("Found file: %s\n", full_path);
-			export_sd(full_path);
-		}
-	}
-
-	closedir(dir);
 }
 
 bool is_ascii(const char *str)
@@ -429,11 +388,18 @@ void export_sd(char *name)
 {
 	int res;
 
+	uint32_t sendtime_x = 0;
+	time_t sendtime, edittime;
+	struct tm tm_sendtime = {};
+	struct tm tm_edittime = {};
+
+	char outpath[PATH_MAX];
+
 	FILE *pFile = fopen(name, "rb");
 	if (!pFile)
 	{
 		perror("Failed to open file");
-		goto error;
+		return;
 	}
 
 	fseek(pFile, 0, SEEK_END);
@@ -445,7 +411,7 @@ void export_sd(char *name)
 	{
 		perror("Failed to allocate memory");
 		fclose(pFile);
-		goto error;
+		return;
 	}
 
 	fread(buffer, 1, fileSize, pFile);
@@ -466,16 +432,12 @@ void export_sd(char *name)
 	{
 		perror("Failed to allocate memory for decryptedBuffer");
 		free(buffer);
-		goto error;
+		return;
 	}
 
 	memcpy(decryptedBuffer, src, fileSize - 0x400);
 
 	struct CDBFILE *cdbfile = (struct CDBFILE *)decryptedBuffer;
-
-	uint32_t sendtime_x = 0;
-	time_t sendtime;
-	struct tm tm_sendtime = {};
 
 	char *nameFile = strrchr(name, '/');
 
@@ -484,7 +446,7 @@ void export_sd(char *name)
 		printf("%s: Invalid file name(?)\n", name);
 		free(decryptedBuffer);
 		free(buffer);
-		goto error;
+		return;
 	}
 
 	sendtime = SECONDS_TO_2000 + sendtime_x;
@@ -496,7 +458,7 @@ void export_sd(char *name)
 		fprintf(stderr, "Error: Failed to allocate memory.\n");
 		free(decryptedBuffer);
 		free(buffer);
-		goto error;
+		return;
 	}
 
 	memcpy(buf, attr, fileSize);
@@ -506,7 +468,7 @@ void export_sd(char *name)
 		free(buf);
 		free(decryptedBuffer);
 		free(buffer);
-		goto error;
+		return;
 	}
 	else
 	{
@@ -514,41 +476,44 @@ void export_sd(char *name)
 		cdbattr->description[0] = ' ';
 	}
 
-	char timestr[30];
-	char datetimestr[60];
-	char editstr[60];
-	static const char mon[12][4] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+	char pathstr[60], timestr[60], editstr[60], datetimestr[60];
 
-	strftime(datetimestr, sizeof(datetimestr), "%F %r", &tm_sendtime);
-	strftime(timestr, sizeof(timestr), "%p %I.%M.%S", &tm_sendtime);
-	strftime(editstr, sizeof(editstr), "%c", &tm_sendtime);
+	edittime = SECONDS_TO_2000 + cdbattr->last_edit_time;
+	gmtime_r(&edittime, &tm_edittime);
+	strftime(datetimestr, sizeof(datetimestr), "%c", &tm_sendtime);
+	strftime(editstr, sizeof(editstr), "%c", &tm_edittime);
+	strftime(timestr, sizeof(timestr), "%F %r", &tm_sendtime);
+	strftime(pathstr, sizeof(pathstr), "%Y/%m %b/%d/%H∶%M∶%S", &tm_sendtime);
+	sprintf(outpath, "%s:%s/%s %s.txt", GetActiveDeviceName(), EXPORT_PATH, pathstr, cdbattr->description);
 
-	char outpath[PATH_MAX];
-	sprintf(outpath, "%s:/cdb/%i/%s/%02i/%s %s.txt", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon],
-			tm_sendtime.tm_mday, timestr, cdbattr->description);
+	printf("Processing SD: %s%s\n", datetimestr, cdbattr->description);
 
-	printf("Processing SD: %s %s\n", datetimestr, cdbattr->description);
+	char *ptr = outpath;
+	while ((ptr = strchr(ptr, '/')))
+	{
+		*ptr = 0;
+		int ret = mkdir(outpath, 0644);
 
-	char outpath1[PATH_MAX];
-	sprintf(outpath1, "%s:/cdb", GetActiveDeviceName(), tm_sendtime.tm_year + 1900);
-	mkdir(outpath1, 0644);
-	sprintf(outpath1, "%s:/cdb/%i", GetActiveDeviceName(), tm_sendtime.tm_year + 1900);
-	mkdir(outpath1, 0644);
-	sprintf(outpath1, "%s:/cdb/%i/%s", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon]);
-	mkdir(outpath1, 0644);
-	sprintf(outpath1, "%s:/cdb/%i/%s/%02i", GetActiveDeviceName(), tm_sendtime.tm_year + 1900, mon[tm_sendtime.tm_mon],
-			tm_sendtime.tm_mday);
-	mkdir(outpath1, 0644);
+		if (ret < 0 && errno != EEXIST)
+		{
+			perror("Failed to create output directory");
+			free(buf);
+			free(decryptedBuffer);
+			free(buffer);
+			return;
+		}
 
-	FILE *text = fopen(outpath, "wb");
+		*ptr++ = '/';
+	}
 
+	FILE *text = fopen(outpath, "w");
 	if (!text)
 	{
 		perror("Failed to create output file");
 		free(buf);
 		free(decryptedBuffer);
 		free(buffer);
-		goto error;
+		return;
 	}
 
 	utf16_t *ptr_desc = (void *)cdbfile + cdbfile->desc_offset;
@@ -569,11 +534,9 @@ void export_sd(char *name)
 	utf8_t *txt_buffer = malloc(len_body8 > len_desc8 ? len_body8 : len_desc8);
 	if (!txt_buffer)
 	{
+		// Why are we still here
 		fclose(text);
-		free(buf);
-		free(decryptedBuffer);
-		free(buffer);
-		goto error;
+		return;
 	}
 
 	utf16_to_utf8(ptr_desc, len_desc, txt_buffer, len_desc8);
@@ -593,9 +556,9 @@ void export_sd(char *name)
 	if (cdbfile->attachment_offset)
 	{
 		bool attachment_ajpg = false;
-
 		const char *ext;
 		uint32_t attachment_magic = (*(uint32_t *)((void *)cdbfile + cdbfile->attachment_offset));
+
 		switch (attachment_magic)
 		{
 		case 0x55AA382D:
@@ -619,31 +582,22 @@ void export_sd(char *name)
 		{
 			sprintf(strrchr(outpath, '.'), "-attachment.%s", ext);
 			text = fopen(outpath, "wb");
-			if (!text)
-				goto error;
 
-			if (!fwrite((void *)cdbfile + cdbfile->attachment_offset, cdbfile->attachment_size, 1, text))
-				goto error;
-			fclose(text);
+			if (text)
+			{
+				fwrite((void *)cdbfile + cdbfile->attachment_offset, cdbfile->attachment_size, 1, text);
+				fclose(text);
+			}
+			else
+			{
+				perror("Failed to create attachment file");
+			}
 		}
 	}
 
-error:
-	res = -errno;
-	perror(outpath);
 	free(buf);
-	free(decryptedBuffer);
 	free(buffer);
-	perror(outpath);
-
-finish:
-	perror(outpath);
-	free(buf);
 	free(decryptedBuffer);
-	free(buffer);
-	free(cdbattr);
-	if (text)
-		fclose(text);
 }
 
 static int copytree(const char *src, int (*callback)(const char *, FILINFO *))
