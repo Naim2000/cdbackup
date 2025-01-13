@@ -15,10 +15,9 @@ static uint32_t kbd_buttons;
 // from Priiloader (/tools/Dacoslove/source/Input.cpp (!?))
 void KBEventHandler(USBKeyboard_event event)
 {
-	if(event.type != USBKEYBOARD_PRESSED && event.type != USBKEYBOARD_RELEASED)
+	if (event.type != USBKEYBOARD_PRESSED && event.type != USBKEYBOARD_RELEASED)
 		return;
 
-	OSReport("event= %i, 0x%x", event.type, event.keyCode);
 	uint32_t button = 0;
 
 	switch (event.keyCode) {
@@ -47,6 +46,12 @@ void KBEventHandler(USBKeyboard_event event)
 		case 0x1C: // Y
 			button = WPAD_BUTTON_2;
 			break;
+		case 0x2E: // +
+		case 0x57: // + (Numpad)
+			button = WPAD_BUTTON_PLUS;
+			break;
+		case 0x2D: // -
+		case 0x56: // - (Numpad)
 		case 0x4C: // Delete
 			button = WPAD_BUTTON_MINUS;
 			break;
@@ -59,7 +64,7 @@ void KBEventHandler(USBKeyboard_event event)
 			break;
 	}
 
-	if(event.type == USBKEYBOARD_PRESSED)
+	if (event.type == USBKEYBOARD_PRESSED)
 		kbd_buttons |= button;
 	else
 		kbd_buttons &= ~button;
