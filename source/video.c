@@ -23,7 +23,7 @@ void init_video() {
 	vmode.viWidth = 672;
 
 	// set correct middlepoint of the screen
-    if ((vmode.viTVMode >> 2) == VI_PAL) {
+	if ((vmode.viTVMode >> 2) == VI_PAL) {
 		vmode.viXOrigin = (VI_MAX_WIDTH_PAL - vmode.viWidth) / 2;
 		vmode.viYOrigin = (VI_MAX_HEIGHT_PAL - vmode.viHeight) / 2;
 	}

@@ -1,145 +1,90 @@
+/* https://github.com/dolphin-emu/dolphin/blob/master/Source/Core/Core/IOS/Network/KD/VFF/VFFUtil.cpp */
+
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdbool.h>
 #include <errno.h>
 
 #include "vff.h"
 #include "fs.h"
-#include "fatfs/ff.h"
-#include "fatfs/diskio.h"
-
-static FILE* s_vffFile = NULL;
 
 bool sanityCheckVFFHeader(struct VFFHeader* hdr, size_t filesize) {
 	return
-		hdr->magic		 == 0x56464620
-	&&	hdr->BOM		 == 0xFEFF
-	&&	hdr->fileSize	 == filesize;
+		hdr->magic		 == VFF_MAGIC
+	&&	hdr->endian		 == VFF_LITTLE_ENDIAN
+	&&	hdr->file_size	 == filesize;
 }
 
-void VFFShutdown() { s_vffFile = NULL; }
+int VFF_ReadClusters(VFFHandle* vff, unsigned offset, unsigned count, void* out) {
+    if (!vff || !out)
+        return 0;
 
-int VFFInit(FILE* fp, FATFS* fs) {
+    if (fseek(vff->fp, sizeof(struct VFFHeader) + (offset * vff->cluster_size), SEEK_SET) < 0) {
+        perror("fseek");
+        return 0;
+    }
+
+    return fread(out, vff->cluster_size, count, vff->fp);
+}
+
+int VFF_Init(const char* filepath, VFFHandle* vff) {
+    FILE* fp;
     struct VFFHeader header[1] = {};
 
-    if (!fread(header, sizeof(header), 1, fp)) {
-        perror("Failed to read VFF header");
+    fp = fopen(filepath, "rb");
+    if (!fp) {
+        perror("fopen");
         return -errno;
     }
 
-    fseek(fp, 0, SEEK_END);
-    size_t filesize = ftell(fp);
-
-    if (!sanityCheckVFFHeader(header, filesize)) {
-        puts("Bad VFF header!");
-        return -EINVAL;
+    if (!fread(header, sizeof(header), 1, fp)) {
+        perror("Failed to read VFF header");
+        fclose(fp);
+        return -errno;
     }
 
-    uint16_t clusterSize = header->clusterSize * 16;
-    uint16_t clusterCount= header->fileSize / clusterSize;
+    // fseek(fp, 0, SEEK_END);
+    // size_t filesize = ftell(fp);
 
-    if (clusterCount < 0xFF5) {
-        fs->fs_type = FS_FAT12;
+    unsigned cluster_size = vff->cluster_size = header->cluster_size << 4; // ??????
+    unsigned cluster_count = header->file_size / cluster_size;
 
-        uint32_t tableSize = __align_up(((clusterCount + 1) / 2) * 3, clusterSize);
-        fs->fsize = tableSize / clusterSize;
+    if (cluster_count < FAT12_MAX) {
+        vff->fat_type = VFF_TYPE_FAT12;
+        vff->fat_size = __align_up(((cluster_count + 1) / 2) * 3, cluster_size) / cluster_size;
     }
-    else if (clusterCount < 0xFFF5) {
-        fs->fs_type = FS_FAT16;
-
-        uint32_t tableSize = __align_up(clusterCount * 2, clusterSize);
-        fs->fsize = tableSize / clusterSize;
+    else if (cluster_count < FAT16_MAX) {
+        vff->fat_type = VFF_TYPE_FAT16;
+        vff->fat_size = __align_up(cluster_count * 2, cluster_size) / cluster_size;
     }
     else {
-        printf("VFF is too large? (%hu * %hu)", clusterSize, clusterCount);
+        printf("VFF is too large? (%hu * %hu)", cluster_size, cluster_count);
+        fclose(fp);
         return -E2BIG;
     }
 
-    fs->n_fats = 2;
-    fs->csize = 1;
+    vff->fp            = fp;
+    vff->rootdir_start = (vff->fat_size * 2);
+    vff->rootdir_count = 128;
+    vff->data_start    = vff->rootdir_start + ((vff->rootdir_count * sizeof(FATDirEnt)) / cluster_size);
+    vff->fat_count     = cluster_count - vff->data_start;
 
-    fs->n_rootdir = 0x80;
+    vff->fats[0] = calloc(vff->fat_size, vff->cluster_size);
+    vff->fats[1] = calloc(vff->fat_size, vff->cluster_size);
 
-    uint32_t sysect = 1 + (fs->fsize * 2) + fs->n_rootdir / (0x200 / 0x20);
-    uint32_t clusterCount_real = clusterCount - sysect;
-
-    fs->n_fatent = clusterCount_real + 2;
-    fs->volbase = 0;
-    fs->fatbase = 1;
-    fs->database = sysect;
-    fs->dirbase = fs->fatbase + fs->fsize * 2;
-
-    // fs->last_clst = fs->free_clst = 0xFFFFFFFF;
-    fs->fsi_flag = 0x80;
-
-    fs->id = 0;
-    fs->cdir = 0;
-
-    fs->wflag = 0;
-    fs->winsect = (LBA_t)-1;
-
-    s_vffFile = fp;
+    VFF_ReadClusters(vff, 0, vff->fat_size, vff->fats[0]);
+    VFF_ReadClusters(vff, vff->fat_size, vff->fat_size, vff->fats[1]);
 
     return 0;
 }
 
-FRESULT vff_mount(FILE* fp, FATFS* fs) {
-    fs->fs_type = 0;
-    fs->pdrv = 0;
+void VFF_Close(VFFHandle* vff) {
+    if (!vff)
+        return;
 
-    if (VFFInit(fp, fs) < 0)
-        return FR_DISK_ERR;
-
-    return FR_OK;
+    free(vff->fats[0]);
+    free(vff->fats[1]);
+    fclose(vff->fp);
+    vff->fp = NULL;
 }
 
-DSTATUS vff_status(void) {
-    DSTATUS res = 0;
-
-    if (!s_vffFile) res |= STA_NODISK;
-
-    return res;
-}
-
-DRESULT vff_read(void* buffer, LBA_t sec, size_t count) {
-    if (!sec) {
-        puts("vff: Tried to read sector 0!");
-        return RES_PARERR;
-    }
-
-    off_t offset = sizeof(struct VFFHeader) + (--sec * VFF_SECTORSIZE);
-    fseek(s_vffFile, offset, SEEK_SET);
-
-    return fread(buffer, VFF_SECTORSIZE, count, s_vffFile) == count ? RES_OK : RES_ERROR;
-}
-
-DRESULT vff_write(const void* buffer, LBA_t sec, size_t count) {
-    if (!sec) {
-        puts("vff: Tried to write sector 0!");
-        return RES_PARERR;
-    }
-
-    off_t offset = sizeof(struct VFFHeader) + (--sec * VFF_SECTORSIZE);
-    fseek(s_vffFile, offset, SEEK_SET);
-
-    return fwrite(buffer, VFF_SECTORSIZE, count, s_vffFile) == count ? RES_OK : RES_ERROR;
-}
-
-DRESULT vff_ioctl(int cmd, void* buf) {
-    switch (cmd) {
-        case CTRL_SYNC: {
-            fflush(s_vffFile);
-            return RES_OK;
-        }
-
-        case GET_SECTOR_COUNT: {
-            fseek(s_vffFile, 0, SEEK_END);
-            *(LBA_t*)buf = ftell(s_vffFile) / VFF_SECTORSIZE;
-            return RES_OK;
-        } 
-
-        default: {
-            printf("vff: unknown ioctl %i\n", cmd);
-            return RES_OK;
-        }
-    }
-}

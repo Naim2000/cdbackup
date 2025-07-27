@@ -63,7 +63,7 @@ int restore() {
 		return -errno;
 	}
 
-	if (FAT_Read(filepath, &header, sizeof(header), 0, 0) < 0) {
+	if (FAT_Read(filepath, &header, sizeof(header)) < 0) {
 		puts("Failed to read VFF header!");
 		perror("Error details");
 
@@ -80,6 +80,18 @@ int restore() {
 		return user_abort;
 
 	return NANDRestoreFile(filepath, NAND_TARGET);
+}
+
+int test() {
+	char filepath[PATH_MAX];
+	VFFHandle vff;
+
+	sprintf(filepath, "%s:%s", GetActiveDeviceName(), FAT_TARGET);
+
+	VFF_Init(filepath, &vff);
+	VFF_Close(&vff);
+
+	return 0;
 }
 
 int delete() {
@@ -116,6 +128,7 @@ int delete() {
 	return ret;
 }
 
+#if 0
 static int extract_cb(const char* path, FILINFO* st)
 {
 	char outpath[PATH_MAX];
@@ -189,14 +202,14 @@ static int export_cb(const char* path, FILINFO* st)
 	struct tm tm_edittime = {};
 
 	FIL fp[1];
-	struct CDBAttrHeader* cdbattr = NULL;
-	struct CDBFILE* cdbfile = NULL;
+	struct CDBFILE* header = NULL;
+	struct RIPLBoardRecord* msg = NULL;
 	char outpath[PATH_MAX];
 	FILE* text = NULL;
 
-	if (!strcmp(st->fname, "cdb.conf")) return 0;
+	if (strcmp(st->fname, "cdb.conf") == 0) return 0;
 
-	if (!sscanf(st->fname, "%X.000", &sendtime_x))
+	if (sscanf(st->fname, "%X.000", &sendtime_x) != 1)
 	{
 		printf("%s: Invalid file name(?)\n", path);
 		return -EINVAL;
@@ -205,13 +218,13 @@ static int export_cb(const char* path, FILINFO* st)
 	sendtime = SECONDS_TO_2000 + sendtime_x;
 	gmtime_r(&sendtime, &tm_sendtime);
 
-	cdbattr = malloc(st->fsize);
-	if (!cdbattr)
+	header = malloc(st->fsize);
+	if (!header)
 	{
 		printf("%s: malloc failed (%u)\n", path, st->fsize);
 		return -ENOMEM;
 	}
-	cdbfile = cdbattr->cdbfile;
+	msg = header->message;
 
 	res = f_open(fp, path, FA_READ);
 	if (res != FR_OK)
@@ -221,7 +234,7 @@ static int export_cb(const char* path, FILINFO* st)
 	}
 
 	UINT read;
-	res = f_read(fp, cdbattr, st->fsize, &read);
+	res = f_read(fp, header, st->fsize, &read);
 	f_close(fp);
 	if (read != st->fsize) // imagine xor
 	{
@@ -231,15 +244,15 @@ static int export_cb(const char* path, FILINFO* st)
 
 	char pathstr[60], timestr[60], editstr[60], datetimestr[60];
 
-	edittime = SECONDS_TO_2000 + cdbattr->last_edit_time;
+	edittime = SECONDS_TO_2000 + header->last_edit_time;
 	gmtime_r(&edittime, &tm_edittime);
 	strftime(datetimestr, sizeof(datetimestr), "%c", &tm_sendtime);
 	strftime(editstr, sizeof(editstr), "%c", &tm_edittime);
 	strftime(timestr, sizeof(timestr), "%F %r", &tm_sendtime);
 	strftime(pathstr, sizeof(pathstr), "%Y/%m %b/%d/%H∶%M∶%S", &tm_sendtime);
-	sprintf(outpath, "%s:%s/%s %s.txt", GetActiveDeviceName(), EXPORT_PATH, pathstr, cdbattr->description);
+	sprintf(outpath, "%s:%s/%s %s.txt", GetActiveDeviceName(), EXPORT_PATH, pathstr, header->description);
 
-	printf("Processing: %s %s\n", timestr, cdbattr->description);
+	printf("Processing: %s %s\n", timestr, header->description);
 
 	char* ptr = outpath;
 	while ((ptr = strchr(ptr, '/')))
@@ -256,8 +269,8 @@ static int export_cb(const char* path, FILINFO* st)
 	text = fopen(outpath, "w");
 	if (!text) goto error;
 
-	utf16_t* ptr_desc = (void*)cdbfile + cdbfile->desc_offset;
-	utf16_t* ptr_body = (void*)cdbfile + cdbfile->body_offset;
+	utf16_t* ptr_desc = (void*)msg + msg->desc_offset;
+	utf16_t* ptr_body = (void*)msg + msg->body_offset;
 	size_t len_desc   = 0;
 	size_t len_body   = 0;
 	size_t len_desc8  = 0;
@@ -281,7 +294,7 @@ static int export_cb(const char* path, FILINFO* st)
 				  "Sender:         %016lld\n"
 				  "Send date:      %s\n"
 				  "Last edit date: %s\n"
-				  "==================\n", (char*)txt_buffer, cdbfile->sender, datetimestr, editstr);
+				  "==================\n", (char*)txt_buffer, msg->sender, datetimestr, editstr);
 
 	utf16_to_utf8(ptr_body, len_body, txt_buffer, len_body8);
 	fputs((char*)txt_buffer, text);
@@ -289,25 +302,26 @@ static int export_cb(const char* path, FILINFO* st)
 	free(txt_buffer);
 	fclose(text);
 
-	if (cdbfile->attachment_offset)
-	{
-		const char* ext;
-		uint32_t attachment_magic = (*(uint32_t*)((void*)cdbfile + cdbfile->attachment_offset));
-		switch (attachment_magic)
-		{
-			case 0x55AA382D: ext = "arc"; break;
-			case 0x30335F30: ext = "ptm"; break;
-			case 0x414A5047: ext = "ajpg"; break;
+	for (int i = 0; i < 2; i++) {
+		RIPLBoardAttachment* attachment = &msg->attachments[i];
 
-			default: ext = "bin"; break;
+		if (attachment->offset) {
+			const char* extension = "bin";
+			uint32_t attachment_magic = (*(uint32_t*)((void*)msg + attachment->offset));
+			switch (attachment_magic)
+			{
+				case 0x55AA382D: extension = "arc"; break;
+				case '03_0': extension = "ptm"; break;
+				case 'AJPG': extension = "ajpg"; break;
+			}
+
+			sprintf(strrchr(outpath, '.'), "-attachment%i.%s", i, extension);
+			text = fopen(outpath, "wb");
+			if (!text) goto error;
+
+			if (!fwrite((void*)msg + attachment->offset, attachment->size, 1, text)) goto error;
+			fclose(text);
 		}
-
-		sprintf(strrchr(outpath, '.'), "-attachment.%s", ext);
-		text = fopen(outpath, "wb");
-		if (!text) goto error;
-
-		if (!fwrite((void*)cdbfile + cdbfile->attachment_offset, cdbfile->attachment_size, 1, text)) goto error;
-		fclose(text);
 	}
 
 	goto finish;
@@ -318,7 +332,7 @@ error:
 	perror(outpath);
 
 finish:
-	free(cdbattr);
+	free(header);
 	if (text) fclose(text);
 	return res;
 }
@@ -404,6 +418,7 @@ int export(void)
 	fclose(fp);
 	return ret;
 }
+#endif
 
 
 static MainMenuItem items[] =
@@ -426,6 +441,7 @@ static MainMenuItem items[] =
 		delete
 	},
 
+#if 0
 	{
 		"Extract (raw)",
 		"\x1b[33;0m",
@@ -436,6 +452,13 @@ static MainMenuItem items[] =
 		"Export (text)",
 		"\x1b[33;1m", // light yellow
 		export
+	},
+#endif
+
+	{
+		"test",
+		"\x1b[32;1m", // light green
+		test
 	},
 
 	{
@@ -460,7 +483,7 @@ int main() {
 	if (!FATMount())
 		goto waitexit;
 
-	MainMenu(items, 6);
+	MainMenu(items, (sizeof items / sizeof(MainMenuItem)));
 
 exit:
 	FATUnmount();

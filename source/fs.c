@@ -9,27 +9,8 @@
 
 #include "fs.h"
 
-__aligned(0x20)
+__aligned(0x40)
 static char fsBuffer[FS_CHUNK];
-
-#define PROGRESSBAR_WIDTH 20
-int progressbar(size_t read, size_t total, void* userp) {
-	printf("\r[\x1b[42;1m");
-
-	unsigned chunk = total / PROGRESSBAR_WIDTH;
-	for (size_t i = 0; i < total; i += chunk)  {
-		if (i > read)
-			printf("\x1b[40m");
-
-		putchar(' ');
-	}
-
-	printf("\x1b[40m] %u / %u bytes (%i%%) ", read, total, (read * 100 / total));
-	if (read == total)
-		putchar('\n');
-
-	return 0;
-}
 
 int NAND_GetFileSize(const char* filepath, size_t* size) {
 	__attribute__((aligned(0x20)))
@@ -61,7 +42,7 @@ int FAT_GetFileSize(const char* filepath, size_t* size) {
 	return 0;
 }
 
-int NAND_Read(const char* filepath, void* buffer, size_t filesize, ProgressCallback callback, void* userp) {
+int NAND_Read(const char* filepath, void* buffer, size_t filesize) {
 	if (!filesize || !buffer) return -EINVAL;
 
 	int ret = ISFS_Open(filepath, ISFS_OPEN_READ);
@@ -77,7 +58,6 @@ int NAND_Read(const char* filepath, void* buffer, size_t filesize, ProgressCallb
 
 		memcpy(buffer + read, fsBuffer, ret);
 		read += ret;
-		if (callback) callback(read, filesize, userp);
 	}
 
 	ISFS_Close(fd);
@@ -91,7 +71,7 @@ int NAND_Read(const char* filepath, void* buffer, size_t filesize, ProgressCallb
 		return -EIO;
 }
 
-int FAT_Read(const char* filepath, void* buffer, size_t filesize, ProgressCallback callback, void* userp) {
+int FAT_Read(const char* filepath, void* buffer, size_t filesize) {
 	FILE* fp = fopen(filepath, "rb");
 	if (!fp)
         return -errno;
@@ -103,7 +83,6 @@ int FAT_Read(const char* filepath, void* buffer, size_t filesize, ProgressCallba
 			break;
 
 		read += _read;
-		if (callback) callback(read, filesize, userp);
 	}
 	fclose(fp);
 
@@ -115,7 +94,7 @@ int FAT_Read(const char* filepath, void* buffer, size_t filesize, ProgressCallba
 		return -EIO;
 }
 
-int NAND_Write(const char* filepath, const void* buffer, size_t filesize, ProgressCallback callback, void* userp) {
+int NAND_Write(const char* filepath, const void* buffer, size_t filesize) {
 	if (!buffer != !filesize) return -EINVAL;
 	
 	int ret = ISFS_Open(filepath, ISFS_OPEN_WRITE);
@@ -132,7 +111,6 @@ int NAND_Write(const char* filepath, const void* buffer, size_t filesize, Progre
 			break;
 
 		wrote += ret;
-		if (callback) callback(wrote, filesize, userp);
 	}
 
 	ISFS_Close(fd);
@@ -144,7 +122,7 @@ int NAND_Write(const char* filepath, const void* buffer, size_t filesize, Progre
 		return -EIO;
 }
 
-int FAT_Write(const char* filepath, const void* buffer, size_t filesize, ProgressCallback callback, void* userp) {
+int FAT_Write(const char* filepath, const void* buffer, size_t filesize) {
 	if (!buffer || !filesize) return -EINVAL;
 	
 	FILE* fp = fopen(filepath, "wb");
@@ -158,7 +136,6 @@ int FAT_Write(const char* filepath, const void* buffer, size_t filesize, Progres
 			break;
 
 		wrote += _wrote;
-		if (callback) callback(wrote, filesize, userp);
 	}
 	fclose(fp);
 
@@ -181,8 +158,6 @@ int NANDBackupFile(const char* filepath, const char* dest) {
 		printf("%s: retreiving file size failed (%i)\n", filepath, ret);
 		return ret;
 	}
-
-	progressbar(0, fsize, 0);
 
 	fd = ret = ISFS_Open(filepath, ISFS_OPEN_READ);
 	if (ret < 0) {
@@ -210,8 +185,6 @@ int NANDBackupFile(const char* filepath, const char* dest) {
 		}
 		
 		total += ret;
-
-		progressbar(total, fsize, 0);
 	}
 	ISFS_Close(fd);
 	fclose(fp);
@@ -236,8 +209,6 @@ int NANDRestoreFile(const char* filepath, const char* dest) {
 		printf("%s: retreiving file size failed (%i)\n", filepath, ret);
 		return ret;
 	}
-
-	progressbar(0, fsize, 0);
 
 	fd = ret = ISFS_Open(dest, ISFS_OPEN_WRITE);
 	if (ret < 0) {
@@ -267,7 +238,6 @@ int NANDRestoreFile(const char* filepath, const char* dest) {
 			break;
 		
 		total += ret;
-		progressbar(total, fsize, 0);
 	}
 	ISFS_Close(fd);
 	fclose(fp);

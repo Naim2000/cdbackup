@@ -4,28 +4,31 @@
 
 #define SECONDS_TO_2000		946684800ULL
 
-struct CDBFILE
+typedef struct RIPLBoardAttachment
 {
-	/* 0x000 */ char magic[4]; // 0x52495f35 'RI_5'
-	/* 0x004 */ float pos_x, pos_y; // are these floats?
+	uint32_t type;
+	uint32_t offset;
+	uint32_t size;
+} RIPLBoardAttachment;
+
+typedef struct RIPLBoardRecord
+{
+	/* 0x000 */ uint32_t magic; // 0x52495f35 'RI_5'
+	/* 0x004 */ float    pos_x, pos_y; // are these floats?
 	/* 0x00c */ uint32_t type;
 	/* 0x010 */ uint64_t send_time; // in ticks!?
 	/* 0x018 */ uint64_t sender;
-	/* 0x020 */ char unk1[0xF8];
-	/* 0x118 */ uint32_t type2;
+	/* 0x020 */ char     unk1[0xF8];
+	/* 0x118 */ uint32_t flags;
 	/* 0x11C */ uint32_t desc_offset;
 	/* 0x120 */ uint32_t body_offset;
 	/* 0x124 */ uint32_t unk2;
-	/* 0x128 */ uint32_t attachment_type;
-	/* 0x12C */ uint32_t attachment_offset;
-	/* 0x130 */ uint32_t attachment_size;
-	/* 0x134 */ uint32_t unk3;
-	/* 0x138 */ uint32_t unk4;
-	/* 0x13c */ uint32_t unk5;
+	/* 0x128 */ RIPLBoardAttachment attachments[2];
 	/* 0x140 */ uint32_t crc32; // CRC32 of this entire header (0x140 bytes)
-};
+} RIPLBoardRecord;
+// _Static_assert(sizeof(RIPLBoardRecord) == 0x144, "RIPLBoardRecord");
 
-struct CDBAttrHeader
+typedef struct CDBFILE
 {
 	/* 0x00 */ char magic[7];	// "CDBFILE"
 	/* 0x07 */ uint8_t version;	// ? like it's 0x02
@@ -49,18 +52,18 @@ struct CDBAttrHeader
 	/* 0x11 */ char unk1[3];
 	/* 0x14 */ char description[0x70 - 0x14];
 
-	/* 0x70 */ uint32_t entry_id;		// "/cdb.conf value".
+	/* 0x70 */ uint32_t entry_id;			// "/cdb.conf value".
 	/* 0x74 */ uint32_t edit_count;
-	/* 0x78 */ uint32_t file_size;		// {1}
-	/* 0x7c */ uint32_t last_edit_time;	// This is also the file name (in hex)
-	/* 0x80 */ char keystring[0x20];	// ? {1}
-	/* 0xA0 */ unsigned char iv[16];	// {1} {2}
-	/* 0xB0 */ unsigned char sha1_hmac[20];
+	/* 0x78 */ uint32_t file_size;			// {1}
+	/* 0x7c */ uint32_t last_edit_time;		// This is also the file name (in hex)
+	/* 0x80 */ char     keystring[0x20];	// ? {1}
+	/* 0xA0 */ uint32_t iv[4];				// {1} {2}
+	/* 0xB0 */ uint32_t sha1_hmac[5];
 	/* 0xC4 */ unsigned char padding[0x400 - 0xC4]; // or unknown. just using it as filler space
 
-	/* 0x400 */ struct CDBFILE cdbfile[];
-};
-_Static_assert(sizeof(struct CDBAttrHeader) == 0x400, "Fix the padding");
+	/* 0x400 */ RIPLBoardRecord message[];
+} CDBFILE;
+_Static_assert(sizeof(CDBFILE) == 0x400, "Fix the padding");
 
 /*
  * {1}: "Messages stored on the SD card (as opposed to the Wii's NAND) are signed and encrypted. These values are only present in encrypted messages."
